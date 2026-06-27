@@ -1,0 +1,17 @@
+node_modules/
+dist/
+*.log
+# Salidas de smoke tests / scratch local
+smoke.out
+smoke.err
+run.log
+err.log
+
+# Credenciales del usuario — NUNCA se commitean. Viven solo en local.
+.byoa/
+*.key
+.env
+.env.local
+
+# Datos de sesión de navegador (account-provider)
+.browser-profiles/
