@@ -5,6 +5,11 @@
 
 const LATENCY_BUCKETS_MS = [50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000];
 
+// Escapa el valor de una etiqueta Prometheus (\, ", saltos de línea).
+function escapeLabel(v: string): string {
+  return v.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
+}
+
 export class Metrics {
   private requests = 0;
   private errors = 0;
@@ -50,7 +55,7 @@ export class Metrics {
     lines.push("# HELP veris_requests_by_model_total Requests por modelo.");
     lines.push("# TYPE veris_requests_by_model_total counter");
     for (const [model, n] of this.byModel) {
-      lines.push(`veris_requests_by_model_total{model="${model}"} ${n}`);
+      lines.push(`veris_requests_by_model_total{model="${escapeLabel(model)}"} ${n}`);
     }
 
     lines.push("# HELP veris_tokens_total Tokens procesados.");

@@ -17,8 +17,8 @@ const cfg = loadConfig();
 // Override del catálogo desde fichero (MODELS_FILE), si se configuró.
 if (cfg.modelsFile) {
   try {
-    applyCatalogOverride(JSON.parse(readFileSync(cfg.modelsFile, "utf8")));
-    console.log(`  catálogo: aplicado override de ${cfg.modelsFile}`);
+    const { applied, skipped } = applyCatalogOverride(JSON.parse(readFileSync(cfg.modelsFile, "utf8")));
+    console.log(`  catálogo: override de ${cfg.modelsFile} (${applied} aplicados, ${skipped} ignorados)`);
   } catch (e: any) {
     console.warn(`  ⚠️  no se pudo leer MODELS_FILE (${cfg.modelsFile}): ${e.message}`);
   }
@@ -29,6 +29,29 @@ const ledger = new Ledger();
 const cache = new ResponseCache(cfg.cacheTtlSeconds);
 const metrics = new Metrics();
 const app = new Hono();
+
+// Coste estimado de las requests EN VUELO (aún sin registrar en el ledger). Se
+// suma al gasto comprometido para el tope, evitando que N requests concurrentes
+// pasen todas el check antes de que ninguna termine (TOCTOU / overshoot).
+let pendingCostUsd = 0;
+
+// ¿Aceptamos una request más sin pasarnos del tope de gasto? Reserva el coste
+// estimado si la acepta. Devuelve un liberador (llamar siempre al terminar).
+function reserveBudget(estMaxUsd: number): { ok: boolean; release: () => void } {
+  if (cfg.spendCapUsd > 0 && ledger.rollup().totalCostUsd + pendingCostUsd >= cfg.spendCapUsd) {
+    return { ok: false, release: () => {} };
+  }
+  pendingCostUsd += estMaxUsd;
+  let released = false;
+  return {
+    ok: true,
+    release: () => {
+      if (released) return;
+      released = true;
+      pendingCostUsd = Math.max(0, pendingCostUsd - estMaxUsd);
+    },
+  };
+}
 
 // Error en formato OpenAI ({ error: { message, type, code } }) para que los
 // SDKs lo parseen igual que un error nativo del proveedor.
@@ -109,11 +132,6 @@ app.post("/v1/chat/completions", async (c) => {
     return c.json(oaiError("No hay providers configurados. Añade una API key.", "no_providers"), 503);
   }
 
-  // Tope de gasto: si se alcanzó, no aceptamos más requests de pago.
-  if (cfg.spendCapUsd > 0 && ledger.rollup().totalCostUsd >= cfg.spendCapUsd) {
-    return c.json(oaiError(`tope de gasto alcanzado ($${cfg.spendCapUsd})`, "spend_cap_exceeded"), 402);
-  }
-
   let body: ChatCompletionRequest;
   try {
     body = await c.req.json();
@@ -122,6 +140,11 @@ app.post("/v1/chat/completions", async (c) => {
   }
   if (!body.messages?.length) {
     return c.json(oaiError("Falta 'messages'"), 400);
+  }
+  // `n>1` con streaming no se soporta (solo emitimos choices[0]); fallar claro
+  // en vez de truncar en silencio.
+  if (body.stream && typeof body.n === "number" && body.n > 1) {
+    return c.json(oaiError("n>1 no soportado con stream", "unsupported"), 400);
   }
 
   let decision;
@@ -135,17 +158,30 @@ app.post("/v1/chat/completions", async (c) => {
   c.header("x-byoa-task", decision.task);
   c.header("x-byoa-reason", decision.reason);
   c.header("x-byoa-prompt-tokens", String(decision.promptTokens));
+
+  // Tope de gasto (con reserva del coste estimado para acotar el overshoot
+  // bajo concurrencia). Cubre TODOS los paths, incluido streaming.
+  const estMax = estimateCost(decision.model, decision.promptTokens, body.max_tokens ?? 1024);
+  const budget = reserveBudget(estMax);
+  if (!budget.ok) {
+    return c.json(oaiError(`tope de gasto alcanzado ($${cfg.spendCapUsd})`, "spend_cap_exceeded"), 402);
+  }
   if (cfg.metricsEnabled) metrics.recordRequest(decision.model.id);
 
-  // Streaming: no se cachea ni se hace fallback (semántica de stream).
+  // Streaming: no se cachea ni se hace fallback (semántica de stream). Registra
+  // el coste real al cerrar el stream (antes evadía ledger y tope de gasto).
   if (body.stream) {
     const provider = registry.get(decision.model.provider);
-    if (!provider) return c.json(oaiError("provider no disponible", "no_providers"), 503);
-    return streamSSE(c, provider, decision.model.upstreamId, decision.model.id, body);
+    if (!provider) {
+      budget.release();
+      return c.json(oaiError("provider no disponible", "no_providers"), 503);
+    }
+    return streamSSE(c, provider, decision, body, budget.release);
   }
 
   const cached = cache.get(body);
   if (cached) {
+    budget.release();
     c.header("x-byoa-cache", "hit");
     return c.json(cached);
   }
@@ -167,7 +203,10 @@ app.post("/v1/chat/completions", async (c) => {
     return c.json(outcome.response);
   } catch (e: any) {
     if (cfg.metricsEnabled) metrics.recordError();
-    return c.json(oaiError(e.message, "upstream_error"), 502);
+    console.error(`[upstream-error] ${decision.model.id}: ${e?.message}`);
+    return c.json(oaiError("error del proveedor upstream (ver logs del gateway)", "upstream_error"), 502);
+  } finally {
+    budget.release();
   }
 });
 
@@ -216,20 +255,23 @@ app.post("/v1/embeddings", async (c) => {
 function streamSSE(
   c: any,
   provider: any,
-  upstreamId: string,
-  modelId: string,
+  decision: { model: { id: string; provider: string; upstreamId: string }; promptTokens: number; task: string },
   req: ChatCompletionRequest,
+  releaseBudget: () => void,
 ) {
   const encoder = new TextEncoder();
   const created = Math.floor(Date.now() / 1000);
   const id = `chatcmpl-byoa-${created}`;
+  const modelId = decision.model.id;
+  let outChars = 0;
 
   const stream = new ReadableStream({
     async start(controller) {
       const send = (obj: unknown) =>
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
       try {
-        for await (const delta of provider.stream(upstreamId, req)) {
+        for await (const delta of provider.stream(decision.model.upstreamId, req)) {
+          outChars += delta.length;
           send({
             id,
             object: "chat.completion.chunk",
@@ -246,11 +288,26 @@ function streamSSE(
           choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
         });
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        // Contabiliza el stream en el ledger y métricas (estimación: el stream
+        // no devuelve usage, así que estimamos tokens de salida por longitud).
+        const completionTokens = Math.ceil(outChars / 4);
+        const costUsd = estimateCost(decision.model as any, decision.promptTokens, completionTokens);
+        ledger.record({
+          model: modelId,
+          provider: decision.model.provider,
+          task: decision.task,
+          promptTokens: decision.promptTokens,
+          completionTokens,
+          costUsd,
+        });
+        if (cfg.metricsEnabled) metrics.recordUsage(decision.promptTokens, completionTokens, costUsd);
       } catch (e: any) {
         if (cfg.metricsEnabled) metrics.recordError();
-        send({ error: e.message });
+        console.error(`[upstream-error stream] ${modelId}: ${e?.message}`);
+        send({ error: { message: "error del proveedor upstream (ver logs del gateway)", type: "upstream_error" } });
       } finally {
         controller.close();
+        releaseBudget();
       }
     },
   });

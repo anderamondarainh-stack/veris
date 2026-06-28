@@ -68,8 +68,9 @@ export class OpenAICompatibleProvider implements Provider {
 
   private nextKey(): string | undefined {
     if (this.keys.length === 0) return undefined;
-    const k = this.keys[this.rr % this.keys.length];
-    this.rr++;
+    const k = this.keys[this.rr];
+    // Normaliza el cursor en sitio (evita crecer hasta perder precisión entera).
+    this.rr = (this.rr + 1) % this.keys.length;
     return k;
   }
 
@@ -109,25 +110,31 @@ export class OpenAICompatibleProvider implements Provider {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const lines = buf.split("\n");
-      buf = lines.pop() ?? "";
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-        const data = trimmed.slice(5).trim();
-        if (data === "[DONE]") return;
-        try {
-          const json = JSON.parse(data);
-          const delta = json.choices?.[0]?.delta?.content;
-          if (delta) yield delta as string;
-        } catch {
-          /* ignora líneas parciales del stream */
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          const data = trimmed.slice(5).trim();
+          if (data === "[DONE]") return;
+          try {
+            const json = JSON.parse(data);
+            const delta = json.choices?.[0]?.delta?.content;
+            if (delta) yield delta as string;
+          } catch {
+            /* ignora líneas parciales del stream */
+          }
         }
       }
+    } finally {
+      // Libera el lock del reader pase lo que pase (error de red, return del
+      // consumidor) para que el body se pueda liberar/GC.
+      reader.cancel().catch(() => {});
     }
   }
 

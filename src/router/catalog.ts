@@ -205,14 +205,54 @@ export function findModel(id: string): ModelSpec | undefined {
   return CATALOG.find((m) => m.id === id || m.upstreamId === id);
 }
 
+// Valida que un objeto tenga la forma mínima de un ModelSpec usable. Rechaza
+// entradas malformadas (que romperían el routing o las etiquetas de /metrics).
+function isValidSpec(s: any): s is ModelSpec {
+  return (
+    s &&
+    typeof s.id === "string" &&
+    s.id.length > 0 &&
+    !/["\n\r\\]/.test(s.id) && // ids con comillas/saltos romperían labels Prometheus
+    typeof s.provider === "string" &&
+    s.provider.length > 0 &&
+    typeof s.upstreamId === "string" &&
+    s.upstreamId.length > 0 &&
+    typeof s.input_per_mtok === "number" &&
+    typeof s.output_per_mtok === "number" &&
+    typeof s.context === "number"
+  );
+}
+
 // Carga modelos extra/override desde un fichero JSON (MODELS_FILE). Permite a
 // cada usuario añadir modelos o corregir precios sin tocar el código. El JSON
 // es un array de ModelSpec; los ids que ya existan se reemplazan, los nuevos se
-// añaden. Muta CATALOG en sitio para preservar los imports vivos.
-export function applyCatalogOverride(specs: ModelSpec[]): void {
+// añaden. Muta CATALOG en sitio para preservar los imports vivos. Devuelve
+// cuántos se aplicaron e ignora (avisando) los inválidos.
+export function applyCatalogOverride(specs: unknown): { applied: number; skipped: number } {
+  if (!Array.isArray(specs)) throw new Error("MODELS_FILE debe ser un array de modelos");
+  let applied = 0;
+  let skipped = 0;
   for (const spec of specs) {
-    const idx = CATALOG.findIndex((m) => m.id === spec.id);
-    if (idx >= 0) CATALOG[idx] = spec;
-    else CATALOG.push(spec);
+    if (!isValidSpec(spec)) {
+      skipped++;
+      continue;
+    }
+    // Normaliza campos opcionales para no arrastrar basura.
+    const clean: ModelSpec = {
+      id: spec.id,
+      provider: spec.provider,
+      upstreamId: spec.upstreamId,
+      good_at: Array.isArray(spec.good_at) ? spec.good_at : [],
+      input_per_mtok: spec.input_per_mtok,
+      output_per_mtok: spec.output_per_mtok,
+      context: spec.context,
+      vision: !!spec.vision,
+      kind: spec.kind === "embedding" ? "embedding" : "chat",
+    };
+    const idx = CATALOG.findIndex((m) => m.id === clean.id);
+    if (idx >= 0) CATALOG[idx] = clean;
+    else CATALOG.push(clean);
+    applied++;
   }
+  return { applied, skipped };
 }
