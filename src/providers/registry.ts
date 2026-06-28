@@ -1,5 +1,6 @@
 import type { Provider } from "./base.js";
-import { OpenAIProvider } from "./openai.js";
+import { OpenAICompatibleProvider } from "./openai-compatible.js";
+import { OPENAI_COMPATIBLE_SPECS, parseKeys } from "./specs.js";
 import { AnthropicProvider } from "./anthropic.js";
 import { GeminiProvider } from "./gemini.js";
 import { AccountProvider } from "./account.js";
@@ -10,6 +11,34 @@ export class Registry {
   private providers = new Map<string, Provider>();
 
   constructor(env: NodeJS.ProcessEnv) {
+    const all: Provider[] = [];
+
+    // 1) Proveedores OpenAI-compatible (la mayoría). Una sola clase, N specs.
+    for (const spec of OPENAI_COMPATIBLE_SPECS) {
+      const baseUrl = (spec.baseUrlEnv && env[spec.baseUrlEnv]) || spec.baseUrl;
+      const keys = parseKeys(env[spec.envKey]);
+      // Los keyless (Ollama) solo se activan si el usuario lo pide explícitamente
+      // (si no, el router elegiría modelos locales que quizá no están corriendo).
+      if (spec.keyless) {
+        const enabled = env[`${spec.name.toUpperCase()}_ENABLED`] === "true" || !!(spec.baseUrlEnv && env[spec.baseUrlEnv]);
+        if (!enabled) continue;
+      }
+      all.push(
+        new OpenAICompatibleProvider({
+          name: spec.name,
+          baseUrl,
+          keys,
+          keyless: spec.keyless,
+          extraHeaders: spec.extraHeaders,
+        }),
+      );
+    }
+
+    // 2) Proveedores con protocolo nativo propio (no OpenAI-compatible).
+    all.push(new AnthropicProvider(env.ANTHROPIC_API_KEY));
+    all.push(new GeminiProvider(env.GEMINI_API_KEY));
+
+    // 3) Account providers (zona gris ToS) — solo si el usuario los activa.
     const accountEnabled = env.ACCOUNT_PROVIDER_ENABLED === "true";
     const accountOpts = (upstream: "openai" | "anthropic" | "gemini") => ({
       enabled: accountEnabled,
@@ -18,16 +47,9 @@ export class Registry {
       humanize: env.ACCOUNT_HUMANIZE !== "false",
       stealth: env.ACCOUNT_STEALTH === "true",
     });
-
-    const all: Provider[] = [
-      new OpenAIProvider(env.OPENAI_API_KEY),
-      new AnthropicProvider(env.ANTHROPIC_API_KEY),
-      new GeminiProvider(env.GEMINI_API_KEY),
-      // Account providers (zona gris) — solo si el usuario los activa.
-      new AccountProvider("openai", accountOpts("openai")),
-      new AccountProvider("anthropic", accountOpts("anthropic")),
-      new AccountProvider("gemini", accountOpts("gemini")),
-    ];
+    all.push(new AccountProvider("openai", accountOpts("openai")));
+    all.push(new AccountProvider("anthropic", accountOpts("anthropic")));
+    all.push(new AccountProvider("gemini", accountOpts("gemini")));
 
     for (const p of all) {
       if (p.isReady()) this.providers.set(p.name, p);

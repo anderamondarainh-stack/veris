@@ -1,0 +1,50 @@
+# Veris — gateway LLM local-first y compatible con OpenAI.
+#
+# Uso básico (solo el gateway, con tus API keys en .env):
+#   docker compose up --build
+#
+# Con Ollama local (modelos en tu máquina, sin coste ni key):
+#   docker compose --profile local up --build
+
+services:
+  veris:
+    build: .
+    image: veris:local
+    container_name: veris
+    ports:
+      - "8787:8787"
+    # Lee todas las variables (API keys, config) desde un fichero .env.
+    env_file:
+      - .env
+    environment:
+      - PORT=8787
+      # Ollama está DESACTIVADO por defecto: si se activa sin que el backend
+      # esté arriba, el router elegiría modelos locales (coste 0) que fallarían.
+      # Para usar el servicio `ollama` de abajo, añade a tu .env:
+      #   OLLAMA_BASE_URL=http://ollama:11434/v1
+      # y arranca con `docker compose --profile local up`. Aquí solo lo
+      # propagamos si está definido (vacío = Ollama off).
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  # Servicio opcional: Ollama para servir modelos locales.
+  # Se levanta solo con el perfil "local". Veris lo alcanza en la red interna
+  # de compose vía OLLAMA_BASE_URL=http://ollama:11434/v1.
+  ollama:
+    image: ollama/ollama
+    container_name: veris-ollama
+    profiles: ["local"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  ollama:

@@ -29,6 +29,8 @@ export class GeminiProvider implements Provider {
       generationConfig: {
         temperature: req.temperature,
         maxOutputTokens: req.max_tokens,
+        topP: req.top_p,
+        stopSequences: typeof req.stop === "string" ? [req.stop] : (req.stop as string[] | undefined),
       },
     };
   }

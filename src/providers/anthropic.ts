@@ -47,6 +47,8 @@ export class AnthropicProvider implements Provider {
         messages,
         max_tokens: req.max_tokens ?? 4096,
         temperature: req.temperature,
+        top_p: req.top_p,
+        stop_sequences: typeof req.stop === "string" ? [req.stop] : req.stop,
       }),
     });
     if (!res.ok) throw new Error(`Anthropic ${res.status}: ${await res.text()}`);
@@ -69,6 +71,8 @@ export class AnthropicProvider implements Provider {
         messages,
         max_tokens: req.max_tokens ?? 4096,
         temperature: req.temperature,
+        top_p: req.top_p,
+        stop_sequences: typeof req.stop === "string" ? [req.stop] : req.stop,
         stream: true,
       }),
     });

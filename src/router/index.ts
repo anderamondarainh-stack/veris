@@ -69,6 +69,7 @@ export function route(
     const explicit = findModel(req.model);
     if (
       explicit &&
+      explicit.kind !== "embedding" && // no se enruta un modelo de embeddings a chat
       availableProviders.has(explicit.provider) &&
       (!needsVision || explicit.vision) &&
       fitsContext(explicit, promptTokens)
@@ -89,6 +90,7 @@ export function route(
 
   let viable = CATALOG.filter(
     (m) =>
+      m.kind !== "embedding" && // los modelos de embeddings no sirven para chat
       availableProviders.has(m.provider) &&
       fitsContext(m, promptTokens) &&
       (!needsVision || m.vision),
@@ -111,4 +113,25 @@ export function route(
     needsVision,
     reason: `auto:${strategy}:${task}`,
   };
+}
+
+// Enruta una petición de embeddings: respeta el modelo explícito si es de tipo
+// embedding y está disponible; si no, elige el embedding más barato disponible.
+export function routeEmbeddings(
+  model: string,
+  availableProviders: Set<string>,
+): ModelSpec {
+  if (model && model !== "auto") {
+    const explicit = findModel(model);
+    if (explicit && explicit.kind === "embedding" && availableProviders.has(explicit.provider)) {
+      return explicit;
+    }
+  }
+  const candidates = CATALOG.filter(
+    (m) => m.kind === "embedding" && availableProviders.has(m.provider),
+  ).sort((a, b) => a.input_per_mtok - b.input_per_mtok);
+  if (candidates.length === 0) {
+    throw new Error("No hay modelo de embeddings disponible (configura un provider que los soporte).");
+  }
+  return candidates[0];
 }

@@ -15,9 +15,38 @@ export interface ChatCompletionRequest {
   temperature?: number;
   max_tokens?: number;
   stream?: boolean;
+  // Parámetros estándar de OpenAI que reenviamos tal cual (passthrough). Antes
+  // se descartaban silenciosamente, lo que rompía function-calling, JSON mode,
+  // etc. en apps reales.
+  tools?: unknown;
+  tool_choice?: unknown;
+  response_format?: unknown;
+  top_p?: number;
+  stop?: unknown;
+  seed?: number;
+  frequency_penalty?: number;
+  presence_penalty?: number;
+  n?: number;
+  user?: string;
   // Extensión propia: pista de tarea para el router. Opcional.
   // Si no se envía, el router la infiere.
   task_hint?: TaskKind;
+  // Cualquier otro campo que el cliente envíe se reenvía sin tocar.
+  [k: string]: unknown;
+}
+
+// ── Embeddings (OpenAI-compatible) ─────────────────────────────────────────
+export interface EmbeddingsRequest {
+  model: string;
+  input: string | string[];
+  [k: string]: unknown;
+}
+
+export interface EmbeddingsResponse {
+  object: "list";
+  data: Array<{ object: "embedding"; embedding: number[]; index: number }>;
+  model: string;
+  usage?: { prompt_tokens: number; total_tokens: number };
 }
 
 export type TaskKind =
@@ -59,7 +88,7 @@ export interface ChatCompletionResponse {
 // Capacidades y coste de cada modelo del catálogo. Lo usa el router.
 export interface ModelSpec {
   id: string;              // id canónico, ej. "openai/gpt-4o-mini"
-  provider: string;        // "openai" | "anthropic" | "gemini"
+  provider: string;        // "openai" | "anthropic" | "gemini" | "groq" | ...
   upstreamId: string;      // id real que espera el proveedor
   good_at: TaskKind[];     // para qué destaca
   // Coste por millón de tokens (USD). Sirve para ordenar por precio.
@@ -67,4 +96,5 @@ export interface ModelSpec {
   output_per_mtok: number;
   context: number;         // ventana de contexto
   vision: boolean;
+  kind?: "chat" | "embedding"; // por defecto "chat"
 }

@@ -7,10 +7,11 @@ Bring Your Own Key — o tu propia cuenta. Tú decides; todo corre en tu máquin
 &nbsp;·&nbsp; Licencia MIT &nbsp;·&nbsp; Node ≥ 20
 
 ```
-  Cualquier cliente OpenAI SDK ──►  byoa-gateway (local)  ──►  OpenAI / Anthropic / Gemini
-                                          │
-                                     ROUTER: elige el modelo
-                                     más adecuado/barato por tarea
+  Cualquier cliente OpenAI SDK ──►  Veris (local)  ──►  OpenAI / Anthropic / Gemini
+                                          │                Groq / DeepSeek / Mistral
+                                     ROUTER: elige el        xAI / Together / Perplexity
+                                     modelo más adecuado     OpenRouter / Ollama (local)
+                                     / barato por tarea
 ```
 
 ## ¿Qué resuelve?
@@ -21,7 +22,8 @@ el gateway:
 1. **Enruta** cada petición al modelo más adecuado para la tarea (código,
    razonamiento, chat, visión) según la estrategia que elijas
    (`cheapest` / `best` / `balanced`).
-2. **Habla con varios proveedores** (OpenAI, Anthropic, Gemini) con una sola
+2. **Habla con varios proveedores** (OpenAI, Anthropic, Gemini, Groq, DeepSeek,
+   Mistral, xAI, Together, Perplexity, OpenRouter y Ollama local) con una sola
    interfaz. Cambias de modelo sin tocar tu código.
 3. **Local-first**: tus claves y sesiones **nunca salen de tu máquina**. No hay
    servidor central que vea tus datos.
@@ -54,6 +56,24 @@ curl http://localhost:8787/v1/chat/completions \
 La respuesta incluye cabeceras de diagnóstico para ver qué decidió el router:
 `x-byoa-model`, `x-byoa-task`, `x-byoa-reason`, `x-byoa-cost-usd`.
 
+### Con Docker
+
+Veris trae `Dockerfile` (multi-stage, `node:20-alpine`) y `docker-compose.yml`:
+
+```bash
+cp .env.example .env        # añade al menos una API key
+docker compose up --build   # gateway en http://localhost:8787
+```
+
+Para incluir además **Ollama** (modelos locales) en el mismo compose, usa el
+perfil `local` (ver [Modelos locales con Ollama](#modelos-locales-con-ollama)):
+
+```bash
+docker compose --profile local up --build
+```
+
+La imagen expone el puerto `8787` e incluye un `HEALTHCHECK` contra `/healthz`.
+
 Con el **SDK de OpenAI** solo cambias la `baseURL` (la `apiKey` es ignorada por
 el gateway salvo que actives su auth propia):
 
@@ -72,8 +92,42 @@ const r = await client.chat.completions.create({
 console.log(r.choices[0].message.content);
 ```
 
-Endpoints disponibles: `GET /`, `GET /v1/models`, `POST /v1/chat/completions`
-(con streaming SSE) y `GET /v1/usage` (coste agregado).
+Endpoints disponibles:
+
+- `GET /` — información del gateway.
+- `GET /v1/models` — catálogo de modelos disponibles.
+- `POST /v1/chat/completions` — completions (con streaming SSE).
+- `POST /v1/embeddings` — embeddings (ver ejemplo abajo).
+- `GET /v1/usage` — coste agregado.
+- `GET /healthz` — liveness (siempre `{"status":"ok"}` si el proceso vive).
+- `GET /readyz` — readiness (indica si hay providers configurados).
+- `GET /metrics` — métricas en formato Prometheus (si `BYOA_METRICS=true`).
+
+Los errores se devuelven en el **formato de error de OpenAI**, para que
+cualquier SDK los entienda sin cambios:
+
+```json
+{ "error": { "message": "...", "type": "...", "code": "..." } }
+```
+
+### Embeddings
+
+```bash
+curl http://localhost:8787/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "text-embedding-3-small",
+    "input": "El veloz zorro marrón salta sobre el perro perezoso"
+  }'
+```
+
+### Observabilidad
+
+```bash
+curl http://localhost:8787/healthz   # liveness
+curl http://localhost:8787/readyz    # readiness
+curl http://localhost:8787/metrics   # métricas Prometheus
+```
 
 ## Configuración
 
@@ -92,14 +146,56 @@ pero necesitas **al menos una API key** para que haya algún provider disponible
 | `BYOA_RETRY_BASE_MS` | `250` | Base del backoff exponencial entre reintentos (ms). |
 | `BYOA_FALLBACK` | `true` | Activa el fallback automático a otro modelo si uno falla. |
 | `BYOA_CACHE_TTL` | `0` | TTL en segundos de la caché de respuestas idénticas. `0` la desactiva. |
+| `BYOA_SPEND_CAP_USD` | `0` | Tope de gasto acumulado en USD. Si se supera, las peticiones responden `402`. `0` = sin tope. |
+| `MODELS_FILE` | _(vacío)_ | Ruta a un JSON opcional para añadir/corregir modelos del catálogo. |
+| `BYOA_LOG` | `true` | Logging estructurado de peticiones. |
+| `BYOA_METRICS` | `true` | Expone métricas Prometheus en `/metrics`. |
 
 ### Providers BYOK (API keys)
 
-| Variable | Descripción |
-|----------|-------------|
-| `OPENAI_API_KEY` | API key oficial de OpenAI. |
-| `ANTHROPIC_API_KEY` | API key oficial de Anthropic. |
-| `GEMINI_API_KEY` | API key oficial de Google Gemini. |
+> **Multi-key:** cualquiera de estas variables admite **varias keys separadas
+> por comas** (`KEY=sk-aaa,sk-bbb`). Veris rota entre ellas (round-robin) para
+> repartir límites de rate.
+
+| Variable | Proveedor | Notas |
+|----------|-----------|-------|
+| `OPENAI_API_KEY` | OpenAI | `OPENAI_BASE_URL` permite override de base URL. |
+| `ANTHROPIC_API_KEY` | Anthropic | Protocolo nativo. |
+| `GEMINI_API_KEY` | Google Gemini | Protocolo nativo. |
+| `GROQ_API_KEY` | Groq | OpenAI-compatible. |
+| `DEEPSEEK_API_KEY` | DeepSeek | OpenAI-compatible. |
+| `MISTRAL_API_KEY` | Mistral | OpenAI-compatible. |
+| `XAI_API_KEY` | xAI (Grok) | OpenAI-compatible. |
+| `TOGETHER_API_KEY` | Together AI | OpenAI-compatible. |
+| `PERPLEXITY_API_KEY` | Perplexity | OpenAI-compatible. |
+| `OPENROUTER_API_KEY` | OpenRouter | OpenAI-compatible (agrega muchos modelos). |
+
+### Modelos locales con Ollama
+
+[Ollama](https://ollama.com) sirve modelos en tu propia máquina, **sin coste y
+sin API key**. Veris lo trata como un provider OpenAI-compatible más.
+
+| Variable | Por defecto | Descripción |
+|----------|-------------|-------------|
+| `OLLAMA_ENABLED` | `false` | Pon `true` para activar Ollama en `http://localhost:11434/v1`. |
+| `OLLAMA_BASE_URL` | _(vacío)_ | Base URL de Ollama. Definirla también lo activa (útil en Docker). |
+
+Local, en tu máquina:
+
+```bash
+ollama serve            # arranca Ollama
+ollama pull llama3.1    # descarga un modelo
+# en tu .env:
+OLLAMA_ENABLED=true
+```
+
+Con Docker Compose (perfil `local`, Veris alcanza a Ollama por la red interna).
+Ollama va **desactivado por defecto**; para activarlo añade a tu `.env`:
+
+```bash
+echo "OLLAMA_BASE_URL=http://ollama:11434/v1" >> .env
+docker compose --profile local up --build
+```
 
 ### Account-provider (zona gris ToS · opcional)
 

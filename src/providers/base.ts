@@ -1,6 +1,8 @@
 import type {
   ChatCompletionRequest,
   ChatCompletionResponse,
+  EmbeddingsRequest,
+  EmbeddingsResponse,
 } from "../types/index.js";
 
 // Contrato que cumple TODO provider, sea una API key (BYOK) o una cuenta
@@ -24,6 +26,12 @@ export interface Provider {
     upstreamId: string,
     req: ChatCompletionRequest,
   ): AsyncGenerator<string, void, unknown>;
+
+  /** Embeddings (opcional; solo providers que los soportan). */
+  embeddings?(
+    upstreamId: string,
+    req: EmbeddingsRequest,
+  ): Promise<EmbeddingsResponse>;
 }
 
 // Helper compartido: construye una respuesta OpenAI-compatible a partir

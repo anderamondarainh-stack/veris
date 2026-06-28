@@ -15,6 +15,14 @@ export interface Config {
   enableFallback: boolean;
   // Caché de respuestas idénticas (TTL en segundos; 0 = desactivada).
   cacheTtlSeconds: number;
+  // Tope de gasto acumulado en USD. Si se supera, /v1/chat responde 402.
+  // 0 = sin tope.
+  spendCapUsd: number;
+  // Fichero JSON opcional para añadir/corregir modelos del catálogo.
+  modelsFile?: string;
+  // Observabilidad.
+  logRequests: boolean;
+  metricsEnabled: boolean;
   accountProviderEnabled: boolean;
   masterKey?: string;
 }
@@ -37,6 +45,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     retryBaseMs: int(env.BYOA_RETRY_BASE_MS, 250),
     enableFallback: bool(env.BYOA_FALLBACK, true),
     cacheTtlSeconds: int(env.BYOA_CACHE_TTL, 0),
+    spendCapUsd: int(env.BYOA_SPEND_CAP_USD, 0),
+    modelsFile: env.MODELS_FILE || undefined,
+    logRequests: bool(env.BYOA_LOG, true),
+    metricsEnabled: bool(env.BYOA_METRICS, true),
     accountProviderEnabled: bool(env.ACCOUNT_PROVIDER_ENABLED, false),
     masterKey: env.BYOA_MASTER_KEY || undefined,
   };
