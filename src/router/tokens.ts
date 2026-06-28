@@ -7,11 +7,27 @@ import type { ChatMessage, ModelSpec } from "../types/index.js";
 const CHARS_PER_TOKEN = 4;
 const PER_MESSAGE_OVERHEAD = 4;
 
+// Cuenta caracteres de un content que puede ser string o array multimodal
+// (estilo OpenAI: [{type:"text",text}, {type:"image_url",...}]). Para imágenes
+// no contamos caracteres (su coste en tokens lo fija el proveedor); contamos el
+// texto de las partes de texto.
+function contentChars(content: unknown): number {
+  if (typeof content === "string") return content.length;
+  if (Array.isArray(content)) {
+    let n = 0;
+    for (const part of content as any[]) {
+      if (part?.type === "text" && typeof part.text === "string") n += part.text.length;
+    }
+    return n;
+  }
+  return 0;
+}
+
 export function estimateTokens(messages: ChatMessage[]): number {
   let total = 0;
   for (const m of messages) {
     total += PER_MESSAGE_OVERHEAD;
-    total += Math.ceil((m.content?.length ?? 0) / CHARS_PER_TOKEN);
+    total += Math.ceil(contentChars(m.content) / CHARS_PER_TOKEN);
     if (m.name) total += Math.ceil(m.name.length / CHARS_PER_TOKEN);
   }
   return total;

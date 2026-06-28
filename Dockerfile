@@ -26,6 +26,10 @@ RUN npm ci --omit=dev && npm cache clean --force
 # Artefacto compilado desde el stage de build
 COPY --from=build /app/dist ./dist
 
+# Usuario no-root: si hubiera una RCE, el proceso no corre como root en el contenedor.
+RUN addgroup -S veris && adduser -S -u 1001 -G veris veris
+USER veris
+
 EXPOSE 8787
 
 # Healthcheck contra el endpoint /healthz del gateway

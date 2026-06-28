@@ -202,7 +202,9 @@ export const CATALOG: ModelSpec[] = [
 ];
 
 export function findModel(id: string): ModelSpec | undefined {
-  return CATALOG.find((m) => m.id === id || m.upstreamId === id);
+  // Prioriza el match por id canónico; solo si no hay, cae a upstreamId. Evita
+  // ambigüedad si un override comparte id de uno con upstreamId de otro.
+  return CATALOG.find((m) => m.id === id) ?? CATALOG.find((m) => m.upstreamId === id);
 }
 
 // Valida que un objeto tenga la forma mínima de un ModelSpec usable. Rechaza
@@ -218,8 +220,11 @@ function isValidSpec(s: any): s is ModelSpec {
     typeof s.upstreamId === "string" &&
     s.upstreamId.length > 0 &&
     typeof s.input_per_mtok === "number" &&
+    s.input_per_mtok >= 0 &&
     typeof s.output_per_mtok === "number" &&
-    typeof s.context === "number"
+    s.output_per_mtok >= 0 &&
+    typeof s.context === "number" &&
+    s.context > 0 // un context de 0 haría que fitsContext lo rechace siempre
   );
 }
 

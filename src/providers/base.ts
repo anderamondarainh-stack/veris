@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   ChatCompletionRequest,
   ChatCompletionResponse,
@@ -42,7 +43,7 @@ export function buildResponse(
   usage?: ChatCompletionResponse["usage"],
 ): ChatCompletionResponse {
   return {
-    id: `chatcmpl-byoa-${Math.round(performance.now())}`,
+    id: `chatcmpl-veris-${randomUUID()}`,
     object: "chat.completion",
     created: Math.floor(Date.now() / 1000),
     model,

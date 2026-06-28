@@ -27,7 +27,7 @@ function ensureUsage(
   model: ModelSpec,
   promptTokens: number,
 ): ChatCompletionResponse {
-  if (res.usage && res.usage.total_tokens != null) return res;
+  if (res.usage && Number.isFinite(res.usage.total_tokens)) return res;
   const text = res.choices?.[0]?.message?.content ?? "";
   const completion = Math.ceil(text.length / 4);
   res.usage = {

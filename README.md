@@ -54,7 +54,7 @@ curl http://localhost:8787/v1/chat/completions \
 ```
 
 La respuesta incluye cabeceras de diagnóstico para ver qué decidió el router:
-`x-byoa-model`, `x-byoa-task`, `x-byoa-reason`, `x-byoa-cost-usd`.
+`x-veris-model`, `x-veris-task`, `x-veris-reason`, `x-veris-cost-usd`.
 
 ### Con Docker
 
@@ -101,7 +101,7 @@ Endpoints disponibles:
 - `GET /v1/usage` — coste agregado.
 - `GET /healthz` — liveness (siempre `{"status":"ok"}` si el proceso vive).
 - `GET /readyz` — readiness (indica si hay providers configurados).
-- `GET /metrics` — métricas en formato Prometheus (si `BYOA_METRICS=true`).
+- `GET /metrics` — métricas en formato Prometheus (si `VERIS_METRICS=true`).
 
 Los errores se devuelven en el **formato de error de OpenAI**, para que
 cualquier SDK los entienda sin cambios:
@@ -176,15 +176,15 @@ pero necesitas **al menos una API key** para que haya algún provider disponible
 |----------|-------------|-------------|
 | `PORT` | `8787` | Puerto del servidor local. |
 | `ROUTER_STRATEGY` | `balanced` | Estrategia del router: `cheapest`, `best` o `balanced`. |
-| `BYOA_GATEWAY_KEY` | _(vacío)_ | Si se define, el gateway exige `Authorization: Bearer <clave>`. Protege tu gateway local de que otra cosa en tu máquina lo use. |
-| `BYOA_MAX_RETRIES` | `2` | Reintentos ante errores transitorios (429/5xx). |
-| `BYOA_RETRY_BASE_MS` | `250` | Base del backoff exponencial entre reintentos (ms). |
-| `BYOA_FALLBACK` | `true` | Activa el fallback automático a otro modelo si uno falla. |
-| `BYOA_CACHE_TTL` | `0` | TTL en segundos de la caché de respuestas idénticas. `0` la desactiva. |
-| `BYOA_SPEND_CAP_USD` | `0` | Tope de gasto acumulado en USD. Si se supera, las peticiones responden `402`. `0` = sin tope. |
+| `VERIS_GATEWAY_KEY` | _(vacío)_ | Si se define, el gateway exige `Authorization: Bearer <clave>`. Protege tu gateway local de que otra cosa en tu máquina lo use. |
+| `VERIS_MAX_RETRIES` | `2` | Reintentos ante errores transitorios (429/5xx). |
+| `VERIS_RETRY_BASE_MS` | `250` | Base del backoff exponencial entre reintentos (ms). |
+| `VERIS_FALLBACK` | `true` | Activa el fallback automático a otro modelo si uno falla. |
+| `VERIS_CACHE_TTL` | `0` | TTL en segundos de la caché de respuestas idénticas. `0` la desactiva. |
+| `VERIS_SPEND_CAP_USD` | `0` | Tope de gasto acumulado en USD. Si se supera, las peticiones responden `402`. `0` = sin tope. |
 | `MODELS_FILE` | _(vacío)_ | Ruta a un JSON opcional para añadir/corregir modelos del catálogo. |
-| `BYOA_LOG` | `true` | Logging estructurado de peticiones. |
-| `BYOA_METRICS` | `true` | Expone métricas Prometheus en `/metrics`. |
+| `VERIS_LOG` | `true` | Logging estructurado de peticiones. |
+| `VERIS_METRICS` | `true` | Expone métricas Prometheus en `/metrics`. |
 
 ### Providers BYOK (API keys)
 
@@ -237,8 +237,8 @@ docker compose --profile local up --build
 | Variable | Por defecto | Descripción |
 |----------|-------------|-------------|
 | `ACCOUNT_PROVIDER_ENABLED` | `false` | Activa el account-provider. **Desactivado por defecto.** Léete el [aviso legal](#aviso-legal) antes de tocarlo. |
-| `BYOA_PROFILE_DIR` | `.browser-profiles` | Carpeta local del perfil de navegador (cookies/sesión). |
-| `BYOA_MASTER_KEY` | _(vacío)_ | Clave maestra para cifrar credenciales en disco (AES-256-GCM). |
+| `VERIS_PROFILE_DIR` | `.browser-profiles` | Carpeta local del perfil de navegador (cookies/sesión). |
+| `VERIS_MASTER_KEY` | _(vacío)_ | Clave maestra para cifrar credenciales en disco (AES-256-GCM). |
 | `ACCOUNT_HEADLESS` | `false` | Ejecuta el navegador sin interfaz gráfica. |
 | `ACCOUNT_HUMANIZE` | `true` | Imita la cadencia humana al teclear. |
 | `ACCOUNT_STEALTH` | `false` | Aplica medidas anti-detección al navegador. |
@@ -281,7 +281,7 @@ Gateway:
 - **Resiliencia**: fallback automático entre modelos + reintentos con backoff
   (429/5xx reintentan; 4xx abortan).
 - **Contabilidad de coste** por request y agregada en `/v1/usage`
-  (cabecera `x-byoa-cost-usd`).
+  (cabecera `x-veris-cost-usd`).
 - **Caché** TTL opcional para completions idénticas.
 - **Auth** opcional del gateway (Bearer token).
 - Streaming SSE compatible con OpenAI.

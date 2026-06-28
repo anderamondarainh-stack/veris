@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { ChatCompletionRequest, ChatCompletionResponse } from "../types/index.js";
 import { buildResponse, type Provider } from "./base.js";
 
@@ -135,13 +136,24 @@ export class GeminiProvider implements Provider {
       .map((p: any) => p.text)
       .join("");
 
+    // Usa el usage REAL de Gemini (usageMetadata). Sin esto, una respuesta de
+    // solo tool_calls (text="") se contabilizaría como 0 tokens de salida.
+    const um = json.usageMetadata;
+    const usage = um
+      ? {
+          prompt_tokens: um.promptTokenCount ?? 0,
+          completion_tokens: um.candidatesTokenCount ?? 0,
+          total_tokens: um.totalTokenCount ?? (um.promptTokenCount ?? 0) + (um.candidatesTokenCount ?? 0),
+        }
+      : undefined;
+
     // Si hay functionCall(s), construimos un message OpenAI con tool_calls.
-    // Gemini no devuelve id de llamada, así que generamos uno sintético.
+    // Gemini no devuelve id de llamada, así que generamos uno único (UUID) para
+    // que el cliente pueda correlacionar el tool_result sin colisiones.
     const calls = parts.filter((p: any) => p.functionCall);
     if (calls.length > 0) {
-      const uniq = Math.random().toString(36).slice(2, 8);
-      const tool_calls = calls.map((p: any, i: number) => ({
-        id: `call_${uniq}_${i}`,
+      const tool_calls = calls.map((p: any) => ({
+        id: `call_${randomUUID()}`,
         type: "function" as const,
         function: {
           name: p.functionCall.name,
@@ -149,7 +161,7 @@ export class GeminiProvider implements Provider {
         },
       }));
       return {
-        id: `chatcmpl-byoa-${Math.round(performance.now())}`,
+        id: `chatcmpl-veris-${randomUUID()}`,
         object: "chat.completion",
         created: Math.floor(Date.now() / 1000),
         model: upstreamId,
@@ -160,10 +172,11 @@ export class GeminiProvider implements Provider {
             finish_reason: "tool_calls",
           },
         ],
+        usage,
       };
     }
 
-    return buildResponse(upstreamId, text);
+    return buildResponse(upstreamId, text, usage);
   }
 
   // LIMITACIÓN: el streaming de tool-calls queda FUERA DE ALCANCE. Este stream
@@ -183,25 +196,32 @@ export class GeminiProvider implements Provider {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const lines = buf.split("\n");
-      buf = lines.pop() ?? "";
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-        try {
-          const json = JSON.parse(trimmed.slice(5).trim());
-          const text = json.candidates?.[0]?.content?.parts
-            ?.map((p: any) => p.text)
-            .join("");
-          if (text) yield text as string;
-        } catch {
-          /* ignora */
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          try {
+            const json = JSON.parse(trimmed.slice(5).trim());
+            // Solo partes de texto: filtramos las que no lo son (p. ej.
+            // functionCall) para no emitir la cadena literal "undefined".
+            const text = (json.candidates?.[0]?.content?.parts ?? [])
+              .filter((p: any) => typeof p.text === "string")
+              .map((p: any) => p.text)
+              .join("");
+            if (text) yield text as string;
+          } catch {
+            /* ignora líneas parciales del stream */
+          }
         }
       }
+    } finally {
+      reader.cancel().catch(() => {});
     }
   }
 }

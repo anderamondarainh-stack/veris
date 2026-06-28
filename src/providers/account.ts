@@ -30,6 +30,9 @@ export class AccountProvider implements Provider {
   private handle: BrowserHandle | null = null;
   private launching: Promise<BrowserHandle> | null = null;
   private disposed = false;
+  // Cola de serialización: una sola pestaña compartida, así que las requests se
+  // ejecutan de una en una (dos `goto` concurrentes corromperían el DOM).
+  private queue: Promise<unknown> = Promise.resolve();
 
   constructor(
     private upstream: "openai" | "anthropic" | "gemini",
@@ -77,16 +80,25 @@ export class AccountProvider implements Provider {
 
   async complete(_upstreamId: string, req: ChatCompletionRequest): Promise<ChatCompletionResponse> {
     if (!this.driver) throw new Error(`account-provider sin driver para ${this.upstream}`);
+    // Encola tras lo pendiente para serializar el acceso a la pestaña. El
+    // `.catch(()=>{})` evita que un fallo previo rompa la cadena de la cola.
+    const run = this.queue.then(() => this.runOne(req));
+    this.queue = run.catch(() => {});
+    return run;
+  }
+
+  private async runOne(req: ChatCompletionRequest): Promise<ChatCompletionResponse> {
+    const driver = this.driver!;
     const { page } = await this.ensureBrowser();
 
     await page
-      .goto(this.driver.url, { waitUntil: "domcontentloaded" })
-      .catch((e: any) => console.warn(`account-provider: navegación a ${this.driver!.url} falló: ${e?.message}`));
-    if (!(await this.driver.isLoggedIn(page))) {
-      throw new Error(`account-provider: sin sesión en ${this.upstream}. ${this.driver.loginHint}`);
+      .goto(driver.url, { waitUntil: "domcontentloaded" })
+      .catch((e: any) => console.warn(`account-provider: navegación a ${driver.url} falló: ${e?.message}`));
+    if (!(await driver.isLoggedIn(page))) {
+      throw new Error(`account-provider: sin sesión en ${this.upstream}. ${driver.loginHint}`);
     }
 
-    const text = await this.driver.send(page, req.messages, { humanize: this.opts.humanize ?? true });
+    const text = await driver.send(page, req.messages, { humanize: this.opts.humanize ?? true });
     return buildResponse(`account:${this.upstream}`, text);
   }
 

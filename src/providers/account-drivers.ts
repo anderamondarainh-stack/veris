@@ -23,7 +23,10 @@ export interface SiteDriver {
 // de chat no exponen roles; concatenamos system+contexto de forma legible.)
 function flatten(messages: ChatMessage[]): string {
   return messages
-    .map((m) => (m.role === "user" ? m.content : `[${m.role}] ${m.content}`))
+    .map((m) => {
+      const content = m.content ?? ""; // assistant con solo tool_calls trae null
+      return m.role === "user" ? content : `[${m.role}] ${content}`;
+    })
     .join("\n\n");
 }
 

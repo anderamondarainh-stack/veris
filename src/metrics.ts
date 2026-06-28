@@ -7,7 +7,7 @@ const LATENCY_BUCKETS_MS = [50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000];
 
 // Escapa el valor de una etiqueta Prometheus (\, ", saltos de línea).
 function escapeLabel(v: string): string {
-  return v.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
+  return v.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r");
 }
 
 export class Metrics {

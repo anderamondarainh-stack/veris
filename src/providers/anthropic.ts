@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { ChatCompletionRequest, ChatCompletionResponse } from "../types/index.js";
 import { buildResponse, type Provider } from "./base.js";
 
@@ -153,7 +154,7 @@ export class AnthropicProvider implements Provider {
         function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) },
       }));
       return {
-        id: `chatcmpl-byoa-${Math.round(performance.now())}`,
+        id: `chatcmpl-veris-${randomUUID()}`,
         object: "chat.completion",
         created: Math.floor(Date.now() / 1000),
         model: upstreamId,
@@ -181,6 +182,9 @@ export class AnthropicProvider implements Provider {
   // usa el path no-streaming complete().
   async *stream(upstreamId: string, req: ChatCompletionRequest) {
     const { system, messages } = this.toAnthropic(req);
+    // Reenviamos tools/tool_choice también en streaming: si no, el modelo no
+    // sabría que hay herramientas y cambiaría de comportamiento en silencio.
+    const tools = req.tool_choice === "none" ? undefined : this.toAnthropicTools(req.tools);
     const res = await fetch(`${this.base}/messages`, {
       method: "POST",
       headers: this.headers(),
@@ -192,6 +196,8 @@ export class AnthropicProvider implements Provider {
         temperature: req.temperature,
         top_p: req.top_p,
         stop_sequences: typeof req.stop === "string" ? [req.stop] : req.stop,
+        tools,
+        tool_choice: tools ? this.toAnthropicToolChoice(req.tool_choice) : undefined,
         stream: true,
       }),
     });
@@ -200,24 +206,28 @@ export class AnthropicProvider implements Provider {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const lines = buf.split("\n");
-      buf = lines.pop() ?? "";
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-        try {
-          const json = JSON.parse(trimmed.slice(5).trim());
-          if (json.type === "content_block_delta" && json.delta?.text) {
-            yield json.delta.text as string;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          try {
+            const json = JSON.parse(trimmed.slice(5).trim());
+            if (json.type === "content_block_delta" && json.delta?.text) {
+              yield json.delta.text as string;
+            }
+          } catch {
+            /* ignora líneas parciales del stream */
           }
-        } catch {
-          /* ignora */
         }
       }
+    } finally {
+      reader.cancel().catch(() => {});
     }
   }
 }

@@ -59,6 +59,10 @@ export function route(
   req: ChatCompletionRequest,
   availableProviders: Set<string>,
   strategy: RouterStrategy,
+  // Lista blanca opcional de ids de modelo permitidos (p. ej. de una virtual
+  // key). Si se pasa, tanto el modelo explícito como el routing `auto` solo
+  // pueden elegir de aquí. undefined = sin restricción.
+  restrictModels?: Set<string>,
 ): RouteDecision {
   const promptTokens = estimateTokens(req.messages);
   const needsVision = detectVision(req.messages);
@@ -70,9 +74,10 @@ export function route(
     if (
       explicit &&
       explicit.kind !== "embedding" && // no se enruta un modelo de embeddings a chat
+      (!restrictModels || restrictModels.has(explicit.id)) &&
       availableProviders.has(explicit.provider) &&
       (!needsVision || explicit.vision) &&
-      fitsContext(explicit, promptTokens)
+      fitsContext(explicit, promptTokens, req.max_tokens ?? 1024)
     ) {
       return {
         model: explicit,
@@ -88,15 +93,18 @@ export function route(
   // 2) Auto: clasifica y construye un ranking de candidatos viables.
   const task = req.task_hint ?? classify(req.messages);
 
-  let viable = CATALOG.filter(
+  const reservedOutput = req.max_tokens ?? 1024;
+  const viable = CATALOG.filter(
     (m) =>
       m.kind !== "embedding" && // los modelos de embeddings no sirven para chat
+      (!restrictModels || restrictModels.has(m.id)) &&
       availableProviders.has(m.provider) &&
-      fitsContext(m, promptTokens) &&
+      fitsContext(m, promptTokens, reservedOutput) &&
       (!needsVision || m.vision),
   );
 
-  // Relaja la especialización solo si no hay nada; nunca relajamos visión/ctx.
+  // La especialización (good_at) no filtra: solo afecta al score; aquí solo
+  // exigimos provider disponible, que quepa el contexto y visión si hace falta.
   if (viable.length === 0) {
     throw new Error(
       `No hay modelo viable (vision=${needsVision}, ~${promptTokens} tok, providers=${[...availableProviders].join("/") || "ninguno"}).`,

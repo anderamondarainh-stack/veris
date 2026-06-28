@@ -16,7 +16,8 @@ import { hostname, userInfo } from "node:os";
 //  para credenciales críticas — por eso se avisa).
 
 const ALGO = "aes-256-gcm";
-const SCRYPT_PARAMS = { N: 16384, r: 8, p: 1 } as const;
+// N=2^15 (recomendación interactiva actual de OWASP). r=8, p=1.
+const SCRYPT_PARAMS = { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 } as const;
 
 interface EncryptedBlob {
   v: 1;

@@ -18,15 +18,33 @@ const REASONING_SIGNS = [
   /\b(matem[aá]tic|teorema|ecuaci[oó]n|optimiza)\b/i,
 ];
 
+// Extrae el texto de un content string o array multimodal (ignora imágenes).
+function textOf(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return (content as any[])
+      .filter((p) => p?.type === "text" && typeof p.text === "string")
+      .map((p) => p.text)
+      .join(" ");
+  }
+  return "";
+}
+
+// ¿Hay imágenes de verdad? (partes image_url/image en arrays, o data URLs).
+function hasImageContent(content: unknown): boolean {
+  if (typeof content === "string") return /data:image\//.test(content);
+  if (Array.isArray(content)) {
+    return (content as any[]).some((p) => p?.type === "image_url" || p?.type === "image");
+  }
+  return false;
+}
+
 export function classify(messages: ChatMessage[]): TaskKind {
-  const hasImage = messages.some(
-    (m) => typeof m.content !== "string" || /data:image\//.test(m.content),
-  );
-  if (hasImage) return "vision";
+  if (messages.some((m) => hasImageContent(m.content))) return "vision";
 
   const text = messages
     .filter((m) => m.role === "user")
-    .map((m) => m.content)
+    .map((m) => textOf(m.content))
     .join("\n");
 
   if (CODE_SIGNS.some((re) => re.test(text))) return "code";

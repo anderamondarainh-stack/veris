@@ -80,7 +80,7 @@ export interface ChatCompletionResponse {
   model: string;
   choices: Array<{
     index: number;
-    message: ChatMessage & { tool_calls?: unknown };
+    message: ChatMessage; // ChatMessage ya incluye tool_calls
     finish_reason: string;
   }>;
   usage?: {

@@ -48,11 +48,34 @@ export class VirtualKeyStore {
 
   private loadFromDisk(): void {
     try {
-      const arr = JSON.parse(readFileSync(this.path!, "utf8")) as VirtualKey[];
-      for (const k of arr) this.keys.set(k.key, k);
+      const arr = JSON.parse(readFileSync(this.path!, "utf8"));
+      if (!Array.isArray(arr)) throw new Error("se esperaba un array");
+      for (const k of arr) {
+        // Valida tipos para no cargar entradas que produzcan NaN en cálculos.
+        if (
+          k &&
+          typeof k.key === "string" &&
+          typeof k.label === "string" &&
+          typeof k.spentUsd === "number" &&
+          Number.isFinite(k.spentUsd) &&
+          typeof k.revoked === "boolean" &&
+          (k.budgetUsd === undefined || (typeof k.budgetUsd === "number" && Number.isFinite(k.budgetUsd))) &&
+          (k.rpm === undefined || (typeof k.rpm === "number" && Number.isFinite(k.rpm))) &&
+          (k.models === undefined || Array.isArray(k.models))
+        ) {
+          this.keys.set(k.key, k as VirtualKey);
+        } else {
+          console.warn(`  ⚠️  VKEYS_FILE: entrada inválida ignorada (${k?.key ?? "sin key"})`);
+        }
+      }
     } catch (e: any) {
       console.warn(`  ⚠️  no se pudo leer VKEYS_FILE (${this.path}): ${e.message}`);
     }
+  }
+
+  // ¿Existe la clave (revocada o no)? Para revocación idempotente.
+  has(key: string): boolean {
+    return this.keys.has(key);
   }
 
   private persist(): void {
@@ -103,7 +126,7 @@ export class VirtualKeyStore {
   // true si no hay presupuesto definido o aún queda margen.
   checkBudget(key: string): boolean {
     const vk = this.keys.get(key);
-    if (!vk) return false;
+    if (!vk || vk.revoked) return false;
     if (vk.budgetUsd === undefined) return true;
     return vk.spentUsd < vk.budgetUsd;
   }
@@ -111,6 +134,7 @@ export class VirtualKeyStore {
   recordSpend(key: string, usd: number): void {
     const vk = this.keys.get(key);
     if (!vk) return;
+    if (!Number.isFinite(usd)) return; // no envenenar spentUsd con NaN/Inf
     vk.spentUsd += usd;
     this.persist();
   }
@@ -132,12 +156,20 @@ export class VirtualKeyStore {
     return true;
   }
 
-  // models undefined = todos los modelos permitidos.
+  // models undefined (o que incluye "auto") = todos los modelos permitidos.
   allowsModel(key: string, modelId: string): boolean {
     const vk = this.keys.get(key);
     if (!vk) return false;
-    if (vk.models === undefined) return true;
+    if (vk.models === undefined || vk.models.includes("auto")) return true;
     return vk.models.includes(modelId);
+  }
+
+  // Lista blanca de ids para pasar al router (`auto` solo elegirá de aquí).
+  // Devuelve undefined si la clave no restringe modelos (o permite "auto").
+  restrictModelsFor(key: string): Set<string> | undefined {
+    const vk = this.keys.get(key);
+    if (!vk || vk.models === undefined || vk.models.includes("auto")) return undefined;
+    return new Set(vk.models);
   }
 
   // Lista las claves (incluye la key entera: el dueño/admin ya la conoce; no

@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { timingSafeEqual } from "node:crypto";
+import { timingSafeEqual, randomUUID } from "node:crypto";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import type { ChatCompletionRequest, EmbeddingsRequest } from "./types/index.js";
@@ -42,7 +42,7 @@ let pendingCostUsd = 0;
 // ¿Aceptamos una request más sin pasarnos del tope de gasto? Reserva el coste
 // estimado si la acepta. Devuelve un liberador (llamar siempre al terminar).
 function reserveBudget(estMaxUsd: number): { ok: boolean; release: () => void } {
-  if (cfg.spendCapUsd > 0 && ledger.rollup().totalCostUsd + pendingCostUsd >= cfg.spendCapUsd) {
+  if (cfg.spendCapUsd > 0 && ledger.totalCost() + pendingCostUsd >= cfg.spendCapUsd) {
     return { ok: false, release: () => {} };
   }
   pendingCostUsd += estMaxUsd;
@@ -111,7 +111,7 @@ if (cfg.logRequests || cfg.metricsEnabled) {
           path: new URL(c.req.url).pathname,
           status: c.res.status,
           ms: Math.round(ms),
-          model: c.res.headers.get("x-byoa-model") ?? undefined,
+          model: c.res.headers.get("x-veris-model") ?? undefined,
         }),
       );
     }
@@ -209,23 +209,31 @@ app.post("/v1/chat/completions", async (c) => {
     return c.json(oaiError("n>1 no soportado con stream", "unsupported"), 400);
   }
 
+  // Virtual keys: la lista blanca de la clave restringe a qué modelos puede
+  // rutear (incluido el modo `auto`).
+  const vkey = c.get("vkey");
+  const restrict = vkey ? vkeys.restrictModelsFor(vkey) : undefined;
+
   let decision;
   try {
-    decision = route(body, registry.availableProviderNames(), cfg.strategy);
+    decision = route(body, registry.availableProviderNames(), cfg.strategy, restrict);
   } catch (e: any) {
+    // Si la clave restringe modelos y no hay ninguno viable, es un 403 (no un 503).
+    if (restrict) {
+      return c.json(oaiError("ningún modelo permitido para esta clave está disponible", "model_not_allowed"), 403);
+    }
     return c.json(oaiError(e.message, "no_viable_model"), 503);
   }
 
-  // Virtual keys: si la clave restringe modelos y el elegido no está, 403.
-  const vkey = c.get("vkey");
+  // Guarda final: el modelo resuelto debe estar permitido por la clave.
   if (vkey && !vkeys.allowsModel(vkey, decision.model.id)) {
     return c.json(oaiError(`modelo '${decision.model.id}' no permitido para esta clave`, "model_not_allowed"), 403);
   }
 
-  c.header("x-byoa-model", decision.model.id);
-  c.header("x-byoa-task", decision.task);
-  c.header("x-byoa-reason", decision.reason);
-  c.header("x-byoa-prompt-tokens", String(decision.promptTokens));
+  c.header("x-veris-model", decision.model.id);
+  c.header("x-veris-task", decision.task);
+  c.header("x-veris-reason", decision.reason);
+  c.header("x-veris-prompt-tokens", String(decision.promptTokens));
 
   // Reservas de gasto (global y por vkey) y rate-limit, en este orden, para
   // que un hit de rate solo se consuma si la request va a procesarse de verdad.
@@ -264,16 +272,16 @@ app.post("/v1/chat/completions", async (c) => {
   const cached = cache.get(body);
   if (cached) {
     releaseAll();
-    c.header("x-byoa-cache", "hit");
+    c.header("x-veris-cache", "hit");
     return c.json(cached);
   }
 
   try {
     const outcome = await completeWithResilience(registry, decision, body, cfg, ledger);
-    c.header("x-byoa-model", outcome.model.id);
-    c.header("x-byoa-cost-usd", outcome.costUsd.toFixed(6));
-    c.header("x-byoa-attempts", String(outcome.attempts.length));
-    c.header("x-byoa-cache", "miss");
+    c.header("x-veris-model", outcome.model.id);
+    c.header("x-veris-cost-usd", outcome.costUsd.toFixed(6));
+    c.header("x-veris-attempts", String(outcome.attempts.length));
+    c.header("x-veris-cache", "miss");
     if (cfg.metricsEnabled && outcome.response.usage) {
       metrics.recordUsage(
         outcome.response.usage.prompt_tokens,
@@ -320,29 +328,55 @@ app.post("/v1/embeddings", async (c) => {
     return c.json(oaiError(`provider ${model.provider} no soporta embeddings`, "unsupported"), 503);
   }
 
-  // Virtual keys: modelo permitido (403) y rate-limit (429).
+  // Virtual keys: modelo permitido (403).
   const vkey = c.get("vkey");
   if (vkey && !vkeys.allowsModel(vkey, model.id)) {
     return c.json(oaiError(`modelo '${model.id}' no permitido para esta clave`, "model_not_allowed"), 403);
   }
+
+  // Tope de gasto (estimación del input) — embeddings también cuentan.
+  const inputStr = typeof body.input === "string" ? body.input : JSON.stringify(body.input);
+  const estIn = Math.ceil(inputStr.length / 4);
+  const estMax = estimateCost(model, estIn, 0);
+  const budget = reserveBudget(estMax);
+  if (!budget.ok) {
+    return c.json(oaiError(`tope de gasto alcanzado ($${cfg.spendCapUsd})`, "spend_cap_exceeded"), 402);
+  }
+  const vkBudget = vkey ? reserveVkey(vkey, estMax) : { ok: true, release: () => {} };
+  if (!vkBudget.ok) {
+    budget.release();
+    return c.json(oaiError("presupuesto de la clave agotado", "insufficient_quota"), 402);
+  }
   if (vkey && !vkeys.checkRateLimit(vkey, Date.now())) {
+    budget.release();
+    vkBudget.release();
     return c.json(oaiError("rate limit de la clave excedido", "rate_limit_exceeded"), 429);
   }
 
-  c.header("x-byoa-model", model.id);
+  c.header("x-veris-model", model.id);
   if (cfg.metricsEnabled) metrics.recordRequest(model.id);
   try {
     const res = await provider.embeddings(model.upstreamId, body);
-    const cost = estimateCost(model, res.usage?.prompt_tokens ?? 0, 0);
-    if (cfg.metricsEnabled && res.usage) {
-      metrics.recordUsage(res.usage.prompt_tokens ?? 0, 0, cost);
-    }
+    const promptTokens = res.usage?.prompt_tokens ?? estIn;
+    const cost = estimateCost(model, promptTokens, 0);
+    if (cfg.metricsEnabled) metrics.recordUsage(promptTokens, 0, cost);
+    ledger.record({
+      model: model.id,
+      provider: model.provider,
+      task: "embedding",
+      promptTokens,
+      completionTokens: 0,
+      costUsd: cost,
+    });
     if (vkey) vkeys.recordSpend(vkey, cost);
     return c.json(res);
   } catch (e: any) {
     if (cfg.metricsEnabled) metrics.recordError();
     console.error(`[upstream-error embeddings] ${model.id}: ${e?.message}`);
     return c.json(oaiError("error del proveedor upstream (ver logs del gateway)", "upstream_error"), 502);
+  } finally {
+    budget.release();
+    vkBudget.release();
   }
 });
 
@@ -350,16 +384,38 @@ app.post("/v1/embeddings", async (c) => {
 function streamSSE(
   c: any,
   provider: any,
-  decision: { model: { id: string; provider: string; upstreamId: string }; promptTokens: number; task: string },
+  decision: {
+    model: { id: string; provider: string; upstreamId: string };
+    promptTokens: number;
+    task: string;
+    reason: string;
+  },
   req: ChatCompletionRequest,
   releaseBudget: () => void,
   vkey?: string,
 ) {
   const encoder = new TextEncoder();
   const created = Math.floor(Date.now() / 1000);
-  const id = `chatcmpl-byoa-${created}`;
+  const id = `chatcmpl-veris-${randomUUID()}`;
   const modelId = decision.model.id;
   let outChars = 0;
+
+  // Contabiliza coste y uso de `outChars` tokens de salida (estimados). Se
+  // llama tanto al terminar bien como en error a mitad de stream (coste parcial).
+  const account = () => {
+    const completionTokens = Math.ceil(outChars / 4);
+    const costUsd = estimateCost(decision.model as any, decision.promptTokens, completionTokens);
+    ledger.record({
+      model: modelId,
+      provider: decision.model.provider,
+      task: decision.task,
+      promptTokens: decision.promptTokens,
+      completionTokens,
+      costUsd,
+    });
+    if (cfg.metricsEnabled) metrics.recordUsage(decision.promptTokens, completionTokens, costUsd);
+    if (vkey) vkeys.recordSpend(vkey, costUsd);
+  };
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -384,24 +440,12 @@ function streamSSE(
           choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
         });
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-        // Contabiliza el stream en el ledger y métricas (estimación: el stream
-        // no devuelve usage, así que estimamos tokens de salida por longitud).
-        const completionTokens = Math.ceil(outChars / 4);
-        const costUsd = estimateCost(decision.model as any, decision.promptTokens, completionTokens);
-        ledger.record({
-          model: modelId,
-          provider: decision.model.provider,
-          task: decision.task,
-          promptTokens: decision.promptTokens,
-          completionTokens,
-          costUsd,
-        });
-        if (cfg.metricsEnabled) metrics.recordUsage(decision.promptTokens, completionTokens, costUsd);
-        // Atribuye el coste estimado del stream a la clave virtual.
-        if (vkey) vkeys.recordSpend(vkey, costUsd);
+        account(); // stream completo → contabiliza coste/uso
       } catch (e: any) {
         if (cfg.metricsEnabled) metrics.recordError();
         console.error(`[upstream-error stream] ${modelId}: ${e?.message}`);
+        // Coste PARCIAL: si ya se generaron tokens antes del error, se cobran.
+        if (outChars > 0) account();
         send({ error: { message: "error del proveedor upstream (ver logs del gateway)", type: "upstream_error" } });
       } finally {
         controller.close();
@@ -415,7 +459,9 @@ function streamSSE(
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
-      "x-byoa-model": modelId,
+      "x-veris-model": modelId,
+      "x-veris-task": decision.task,
+      "x-veris-reason": decision.reason,
     },
   });
 }
@@ -442,7 +488,18 @@ app.post("/admin/keys", async (c) => {
   } catch {
     return c.json(oaiError("JSON inválido"), 400);
   }
-  if (!body.label) return c.json(oaiError("Falta 'label'"), 400);
+  if (!body.label || typeof body.label !== "string" || body.label.length > 200) {
+    return c.json(oaiError("'label' requerido (string ≤ 200 chars)"), 400);
+  }
+  if (body.budgetUsd !== undefined && !(Number.isFinite(body.budgetUsd) && body.budgetUsd > 0)) {
+    return c.json(oaiError("'budgetUsd' debe ser un número positivo"), 400);
+  }
+  if (body.rpm !== undefined && !(Number.isInteger(body.rpm) && body.rpm > 0)) {
+    return c.json(oaiError("'rpm' debe ser un entero positivo"), 400);
+  }
+  if (body.models !== undefined && !Array.isArray(body.models)) {
+    return c.json(oaiError("'models' debe ser un array de ids"), 400);
+  }
   const vk = vkeys.create({
     label: body.label,
     budgetUsd: body.budgetUsd,
@@ -464,11 +521,11 @@ app.delete("/admin/keys/:key", (c) => {
   const denied = requireAdmin(c);
   if (denied) return denied;
   const key = c.req.param("key");
-  if (!vkeys.validate(key)) {
+  if (!vkeys.has(key)) {
     return c.json(oaiError("clave no encontrada", "not_found"), 404);
   }
-  vkeys.revoke(key);
-  return c.json({ revoked: true, key });
+  vkeys.revoke(key); // idempotente: revocar una ya revocada es OK
+  return c.json({ revoked: true });
 });
 
 serve({ fetch: app.fetch, port: cfg.port }, (info) => {
