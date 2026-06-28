@@ -7,6 +7,11 @@ export interface ChatMessage {
   role: Role;
   content: string;
   name?: string;
+  // Function/tool-calling (formato OpenAI). En un assistant message lleva las
+  // llamadas a herramientas; en un message role:"tool" enlaza la respuesta con
+  // la llamada previa vía tool_call_id.
+  tool_calls?: unknown;
+  tool_call_id?: string;
 }
 
 export interface ChatCompletionRequest {
@@ -75,7 +80,7 @@ export interface ChatCompletionResponse {
   model: string;
   choices: Array<{
     index: number;
-    message: ChatMessage;
+    message: ChatMessage & { tool_calls?: unknown };
     finish_reason: string;
   }>;
   usage?: {

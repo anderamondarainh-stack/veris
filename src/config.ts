@@ -25,6 +25,14 @@ export interface Config {
   metricsEnabled: boolean;
   accountProviderEnabled: boolean;
   masterKey?: string;
+  // Virtual keys (multi-tenant): emitir claves vk-... con presupuesto y
+  // rate-limit por tercero. Si está activo, sustituye a la auth por
+  // gatewayApiKey para /v1/*.
+  virtualKeysEnabled: boolean;
+  // Clave del dueño para las rutas /admin/keys.
+  adminKey?: string;
+  // Fichero JSON opcional para persistir las claves virtuales.
+  vkeysFile?: string;
 }
 
 function int(v: string | undefined, def: number): number {
@@ -51,5 +59,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     metricsEnabled: bool(env.BYOA_METRICS, true),
     accountProviderEnabled: bool(env.ACCOUNT_PROVIDER_ENABLED, false),
     masterKey: env.BYOA_MASTER_KEY || undefined,
+    virtualKeysEnabled: bool(env.VERIS_VKEYS_ENABLED, false),
+    adminKey: env.VERIS_ADMIN_KEY || undefined,
+    vkeysFile: env.VERIS_VKEYS_FILE || undefined,
   };
 }

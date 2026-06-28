@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { timingSafeEqual } from "node:crypto";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import type { ChatCompletionRequest, EmbeddingsRequest } from "./types/index.js";
@@ -11,6 +12,7 @@ import { ResponseCache } from "./cache.js";
 import { Metrics } from "./metrics.js";
 import { completeWithResilience } from "./orchestrator.js";
 import { estimateCost } from "./router/tokens.js";
+import { VirtualKeyStore } from "./virtual-keys.js";
 
 const cfg = loadConfig();
 
@@ -28,7 +30,9 @@ const registry = new Registry(process.env);
 const ledger = new Ledger();
 const cache = new ResponseCache(cfg.cacheTtlSeconds);
 const metrics = new Metrics();
-const app = new Hono();
+// Store de claves virtuales (multi-tenant). Solo se usa si está activado.
+const vkeys = new VirtualKeyStore(cfg.vkeysFile);
+const app = new Hono<{ Variables: { vkey?: string } }>();
 
 // Coste estimado de las requests EN VUELO (aún sin registrar en el ledger). Se
 // suma al gasto comprometido para el tope, evitando que N requests concurrentes
@@ -59,6 +63,39 @@ function oaiError(message: string, type = "invalid_request_error", code?: string
   return { error: { message, type, code: code ?? null } };
 }
 
+// Comparación de secretos en tiempo constante (evita timing attacks sobre las
+// claves de auth/admin). Guarda de longitud para no lanzar con buffers desiguales.
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
+
+// Reserva de presupuesto POR CLAVE VIRTUAL (mismo patrón que reserveBudget pero
+// por vkey), para acotar el overshoot cuando varias requests de la misma clave
+// llegan concurrentes antes de que ninguna registre su gasto.
+const pendingByVkey = new Map<string, number>();
+function reserveVkey(key: string, estMax: number): { ok: boolean; release: () => void } {
+  const vk = vkeys.validate(key);
+  if (vk && vk.budgetUsd !== undefined) {
+    const pending = pendingByVkey.get(key) ?? 0;
+    if (vk.spentUsd + pending >= vk.budgetUsd) return { ok: false, release: () => {} };
+    pendingByVkey.set(key, pending + estMax);
+  }
+  let released = false;
+  return {
+    ok: true,
+    release: () => {
+      if (released) return;
+      released = true;
+      const p = (pendingByVkey.get(key) ?? 0) - estMax;
+      if (p <= 0) pendingByVkey.delete(key);
+      else pendingByVkey.set(key, p);
+    },
+  };
+}
+
 // ── Logging estructurado + métricas + latencia ────────────────────────────
 if (cfg.logRequests || cfg.metricsEnabled) {
   app.use("/v1/*", async (c, next) => {
@@ -82,12 +119,37 @@ if (cfg.logRequests || cfg.metricsEnabled) {
 }
 
 // ── Auth opcional del propio gateway ──────────────────────────────────────
-if (cfg.gatewayApiKey) {
+// Con virtual keys activas, la auth por gatewayApiKey se sustituye por la
+// validación de la clave virtual para /v1/* (no conviven en la misma ruta).
+if (cfg.gatewayApiKey && !cfg.virtualKeysEnabled) {
   app.use("/v1/*", async (c, next) => {
     const auth = c.req.header("authorization") ?? "";
-    if (auth !== `Bearer ${cfg.gatewayApiKey}`) {
+    if (!safeEqual(auth, `Bearer ${cfg.gatewayApiKey}`)) {
       return c.json(oaiError("no autorizado", "authentication_error"), 401);
     }
+    await next();
+  });
+}
+
+// ── Virtual keys (multi-tenant) ───────────────────────────────────────────
+// Exige `Authorization: Bearer vk-...`, valida la clave y comprueba presupuesto
+// (pre-check rápido, 402), y guarda la clave en el contexto. El rate-limit y la
+// reserva precisa de presupuesto se aplican en los handlers JUSTO antes de
+// llamar al upstream, para no consumir cuota de rate en requests que se rechazan
+// luego (modelo no permitido, tope global, etc.). El check de modelos (403) se
+// hace en el handler de chat tras conocer el modelo elegido por el router.
+if (cfg.virtualKeysEnabled) {
+  app.use("/v1/*", async (c, next) => {
+    const auth = c.req.header("authorization") ?? "";
+    const key = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    const vk = vkeys.validate(key);
+    if (!vk) {
+      return c.json(oaiError("clave virtual inválida o revocada", "authentication_error"), 401);
+    }
+    if (!vkeys.checkBudget(key)) {
+      return c.json(oaiError("presupuesto de la clave agotado", "insufficient_quota"), 402);
+    }
+    c.set("vkey", key);
     await next();
   });
 }
@@ -154,18 +216,38 @@ app.post("/v1/chat/completions", async (c) => {
     return c.json(oaiError(e.message, "no_viable_model"), 503);
   }
 
+  // Virtual keys: si la clave restringe modelos y el elegido no está, 403.
+  const vkey = c.get("vkey");
+  if (vkey && !vkeys.allowsModel(vkey, decision.model.id)) {
+    return c.json(oaiError(`modelo '${decision.model.id}' no permitido para esta clave`, "model_not_allowed"), 403);
+  }
+
   c.header("x-byoa-model", decision.model.id);
   c.header("x-byoa-task", decision.task);
   c.header("x-byoa-reason", decision.reason);
   c.header("x-byoa-prompt-tokens", String(decision.promptTokens));
 
-  // Tope de gasto (con reserva del coste estimado para acotar el overshoot
-  // bajo concurrencia). Cubre TODOS los paths, incluido streaming.
+  // Reservas de gasto (global y por vkey) y rate-limit, en este orden, para
+  // que un hit de rate solo se consuma si la request va a procesarse de verdad.
   const estMax = estimateCost(decision.model, decision.promptTokens, body.max_tokens ?? 1024);
   const budget = reserveBudget(estMax);
   if (!budget.ok) {
     return c.json(oaiError(`tope de gasto alcanzado ($${cfg.spendCapUsd})`, "spend_cap_exceeded"), 402);
   }
+  const vkBudget = vkey ? reserveVkey(vkey, estMax) : { ok: true, release: () => {} };
+  if (!vkBudget.ok) {
+    budget.release();
+    return c.json(oaiError("presupuesto de la clave agotado", "insufficient_quota"), 402);
+  }
+  if (vkey && !vkeys.checkRateLimit(vkey, Date.now())) {
+    budget.release();
+    vkBudget.release();
+    return c.json(oaiError("rate limit de la clave excedido", "rate_limit_exceeded"), 429);
+  }
+  const releaseAll = () => {
+    budget.release();
+    vkBudget.release();
+  };
   if (cfg.metricsEnabled) metrics.recordRequest(decision.model.id);
 
   // Streaming: no se cachea ni se hace fallback (semántica de stream). Registra
@@ -173,15 +255,15 @@ app.post("/v1/chat/completions", async (c) => {
   if (body.stream) {
     const provider = registry.get(decision.model.provider);
     if (!provider) {
-      budget.release();
+      releaseAll();
       return c.json(oaiError("provider no disponible", "no_providers"), 503);
     }
-    return streamSSE(c, provider, decision, body, budget.release);
+    return streamSSE(c, provider, decision, body, releaseAll, vkey);
   }
 
   const cached = cache.get(body);
   if (cached) {
-    budget.release();
+    releaseAll();
     c.header("x-byoa-cache", "hit");
     return c.json(cached);
   }
@@ -200,13 +282,15 @@ app.post("/v1/chat/completions", async (c) => {
       );
     }
     cache.set(body, outcome.response);
+    // Atribuye el coste real a la clave virtual (multi-tenant).
+    if (vkey) vkeys.recordSpend(vkey, outcome.costUsd);
     return c.json(outcome.response);
   } catch (e: any) {
     if (cfg.metricsEnabled) metrics.recordError();
     console.error(`[upstream-error] ${decision.model.id}: ${e?.message}`);
     return c.json(oaiError("error del proveedor upstream (ver logs del gateway)", "upstream_error"), 502);
   } finally {
-    budget.release();
+    releaseAll();
   }
 });
 
@@ -236,18 +320,29 @@ app.post("/v1/embeddings", async (c) => {
     return c.json(oaiError(`provider ${model.provider} no soporta embeddings`, "unsupported"), 503);
   }
 
+  // Virtual keys: modelo permitido (403) y rate-limit (429).
+  const vkey = c.get("vkey");
+  if (vkey && !vkeys.allowsModel(vkey, model.id)) {
+    return c.json(oaiError(`modelo '${model.id}' no permitido para esta clave`, "model_not_allowed"), 403);
+  }
+  if (vkey && !vkeys.checkRateLimit(vkey, Date.now())) {
+    return c.json(oaiError("rate limit de la clave excedido", "rate_limit_exceeded"), 429);
+  }
+
   c.header("x-byoa-model", model.id);
   if (cfg.metricsEnabled) metrics.recordRequest(model.id);
   try {
     const res = await provider.embeddings(model.upstreamId, body);
+    const cost = estimateCost(model, res.usage?.prompt_tokens ?? 0, 0);
     if (cfg.metricsEnabled && res.usage) {
-      const cost = estimateCost(model, res.usage.prompt_tokens ?? 0, 0);
       metrics.recordUsage(res.usage.prompt_tokens ?? 0, 0, cost);
     }
+    if (vkey) vkeys.recordSpend(vkey, cost);
     return c.json(res);
   } catch (e: any) {
     if (cfg.metricsEnabled) metrics.recordError();
-    return c.json(oaiError(e.message, "upstream_error"), 502);
+    console.error(`[upstream-error embeddings] ${model.id}: ${e?.message}`);
+    return c.json(oaiError("error del proveedor upstream (ver logs del gateway)", "upstream_error"), 502);
   }
 });
 
@@ -258,6 +353,7 @@ function streamSSE(
   decision: { model: { id: string; provider: string; upstreamId: string }; promptTokens: number; task: string },
   req: ChatCompletionRequest,
   releaseBudget: () => void,
+  vkey?: string,
 ) {
   const encoder = new TextEncoder();
   const created = Math.floor(Date.now() / 1000);
@@ -301,6 +397,8 @@ function streamSSE(
           costUsd,
         });
         if (cfg.metricsEnabled) metrics.recordUsage(decision.promptTokens, completionTokens, costUsd);
+        // Atribuye el coste estimado del stream a la clave virtual.
+        if (vkey) vkeys.recordSpend(vkey, costUsd);
       } catch (e: any) {
         if (cfg.metricsEnabled) metrics.recordError();
         console.error(`[upstream-error stream] ${modelId}: ${e?.message}`);
@@ -321,6 +419,57 @@ function streamSSE(
     },
   });
 }
+
+// ── Rutas admin de virtual keys ───────────────────────────────────────────
+// Protegidas por `Authorization: Bearer <adminKey>`. Si no hay adminKey
+// configurada, las rutas no existen (404) para no filtrar su presencia.
+function requireAdmin(c: any): Response | null {
+  if (!cfg.adminKey) return c.json(oaiError("no encontrado", "not_found"), 404);
+  const auth = c.req.header("authorization") ?? "";
+  if (!safeEqual(auth, `Bearer ${cfg.adminKey}`)) {
+    return c.json(oaiError("no autorizado", "authentication_error"), 401);
+  }
+  return null;
+}
+
+// Crea una clave y la DEVUELVE entera (única vez que se ve completa).
+app.post("/admin/keys", async (c) => {
+  const denied = requireAdmin(c);
+  if (denied) return denied;
+  let body: { label?: string; budgetUsd?: number; rpm?: number; models?: string[] };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json(oaiError("JSON inválido"), 400);
+  }
+  if (!body.label) return c.json(oaiError("Falta 'label'"), 400);
+  const vk = vkeys.create({
+    label: body.label,
+    budgetUsd: body.budgetUsd,
+    rpm: body.rpm,
+    models: body.models,
+  });
+  return c.json(vk, 201);
+});
+
+// Lista las claves.
+app.get("/admin/keys", (c) => {
+  const denied = requireAdmin(c);
+  if (denied) return denied;
+  return c.json({ object: "list", data: vkeys.list() });
+});
+
+// Revoca una clave.
+app.delete("/admin/keys/:key", (c) => {
+  const denied = requireAdmin(c);
+  if (denied) return denied;
+  const key = c.req.param("key");
+  if (!vkeys.validate(key)) {
+    return c.json(oaiError("clave no encontrada", "not_found"), 404);
+  }
+  vkeys.revoke(key);
+  return c.json({ revoked: true, key });
+});
 
 serve({ fetch: app.fetch, port: cfg.port }, (info) => {
   const provs = [...registry.availableProviderNames()];

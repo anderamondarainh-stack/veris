@@ -129,6 +129,41 @@ curl http://localhost:8787/readyz    # readiness
 curl http://localhost:8787/metrics   # métricas Prometheus
 ```
 
+## Function calling (tools)
+
+Veris reenvía `tools`/`tool_choice` tal cual a los proveedores OpenAI-compatible,
+y **traduce** el formato para Anthropic y Gemini (en ambos sentidos: la petición
+y la respuesta con `tool_calls`). Así usas function-calling con el mismo código
+apuntes al modelo que apuntes. Limitación: el streaming de tool-calls no está
+soportado; usa el modo no-streaming para function-calling.
+
+## Multi-tenant: virtual keys
+
+¿Quieres dar acceso a Veris a varias personas/apps sin repartir tus API keys
+reales? Activa las **claves virtuales**: emites claves `vk-…`, cada una con su
+**presupuesto** (USD), **rate-limit** (req/min) y, opcionalmente, lista de
+**modelos permitidos**. El gasto se atribuye por clave.
+
+```bash
+# en .env
+VERIS_VKEYS_ENABLED=true
+VERIS_ADMIN_KEY=admin-secreto
+
+# crear una clave (la devuelve entera una sola vez)
+curl -X POST http://localhost:8787/admin/keys \
+  -H "Authorization: Bearer admin-secreto" -H "Content-Type: application/json" \
+  -d '{"label":"app-1","budgetUsd":10,"rpm":60,"models":["auto","openai/gpt-4o-mini"]}'
+
+# usarla como cualquier API key OpenAI
+curl http://localhost:8787/v1/chat/completions \
+  -H "Authorization: Bearer vk-..." -H "Content-Type: application/json" \
+  -d '{"model":"auto","messages":[{"role":"user","content":"hola"}]}'
+```
+
+Rutas admin (Bearer `VERIS_ADMIN_KEY`): `POST /admin/keys`, `GET /admin/keys`,
+`DELETE /admin/keys/:key`. Errores: `402` presupuesto agotado, `429` rate-limit,
+`403` modelo no permitido.
+
 ## Configuración
 
 Todas las variables se leen del entorno al arrancar (ver `src/config.ts`).
