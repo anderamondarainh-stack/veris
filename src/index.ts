@@ -2,6 +2,12 @@ import { readFileSync } from "node:fs";
 import { timingSafeEqual, randomUUID } from "node:crypto";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
+import { loadEnvFile } from "./env.js";
+
+// Carga .env ANTES de leer la configuración (si existe). Imprescindible: sin
+// esto, seguir el README (`cp .env.example .env`) no surtiría efecto.
+loadEnvFile();
+
 import type { ChatCompletionRequest, EmbeddingsRequest } from "./types/index.js";
 import { Registry } from "./providers/registry.js";
 import { route, routeEmbeddings } from "./router/index.js";
@@ -224,6 +230,10 @@ app.post("/v1/chat/completions", async (c) => {
   try {
     decision = route(body, registry.availableProviderNames(), cfg.strategy, restrict);
   } catch (e: any) {
+    // Modelo explícito desconocido: 404, como OpenAI. No se sustituye en silencio.
+    if (e?.code === "model_not_found") {
+      return c.json(oaiError(e.message, "model_not_found"), 404);
+    }
     // Si la clave restringe modelos y no hay ninguno viable, es un 403 (no un 503).
     if (restrict) {
       console.error(`[route] sin modelo permitido para vkey: ${e?.message}`);

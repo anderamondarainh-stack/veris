@@ -68,11 +68,18 @@ export function route(
   const needsVision = detectVision(req.messages);
 
   // 1) Modelo explícito: respétalo si existe, hay provider, soporta visión si
-  //    hace falta y le cabe el contexto. Si no cumple, caemos a auto.
+  //    hace falta y le cabe el contexto. Un id DESCONOCIDO es un error claro
+  //    (404, estilo OpenAI): nunca sustituimos en silencio por otro modelo, que
+  //    falsearía el coste y la confianza. Un modelo que existe pero no encaja
+  //    (embedding, sin provider, sin visión, no cabe) sí cae a `auto`.
   if (req.model && req.model !== "auto") {
     const explicit = findModel(req.model);
+    if (!explicit) {
+      const err = new Error(`modelo '${req.model}' no encontrado en el catálogo`);
+      (err as Error & { code?: string }).code = "model_not_found";
+      throw err;
+    }
     if (
-      explicit &&
       explicit.kind !== "embedding" && // no se enruta un modelo de embeddings a chat
       (!restrictModels || restrictModels.has(explicit.id)) &&
       availableProviders.has(explicit.provider) &&

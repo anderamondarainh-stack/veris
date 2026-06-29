@@ -90,4 +90,12 @@ describe("route", () => {
   it("lanza si no hay providers", () => {
     expect(() => route(req("hola"), new Set(), "balanced")).toThrow();
   });
+  it("un modelo explícito desconocido lanza model_not_found (no sustituye en silencio)", () => {
+    try {
+      route(req("hola", { model: "no/existe" }), ALL, "balanced");
+      throw new Error("debería haber lanzado");
+    } catch (e: any) {
+      expect(e.code).toBe("model_not_found");
+    }
+  });
 });
