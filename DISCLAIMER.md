@@ -1,39 +1,39 @@
-# Aviso legal (Disclaimer)
+# Disclaimer
 
-byoa-gateway es una herramienta de software ofrecida bajo licencia
-[MIT](LICENSE), **sin garantía de ningún tipo**.
+Veris is a software tool offered under the [MIT](LICENSE) license,
+**without warranty of any kind**.
 
-## Sobre el account-provider
+## About the account provider
 
-El gateway incluye un componente opcional llamado **account-provider** que
-automatiza la interfaz web de chat de proveedores (OpenAI, Anthropic, Google)
-para usar una **suscripción de cuenta** (tipo Plus/Pro) como si fuera una API.
+The gateway includes an optional component, the **account provider**, which
+automates the chat web interface of providers (OpenAI, Anthropic, Google) to use
+a **subscription account** (Plus/Pro-style) as if it were an API.
 
-Debes entender lo siguiente antes de activarlo:
+You must understand the following before enabling it:
 
-1. **Viola los Términos de Servicio** de OpenAI, Anthropic y Google. Estos
-   prohíben el acceso automatizado a sus interfaces de chat con cuentas de
-   suscripción.
-2. **Puede provocar la suspensión o el baneo** permanente de tu cuenta en esos
-   servicios.
-3. Está **desactivado por defecto** (`ACCOUNT_PROVIDER_ENABLED=false`). El uso
-   recomendado del proyecto es **BYOK** (tu propia API key oficial), que es
-   limpio y está dentro de los ToS.
-4. Si decides activarlo, lo haces **bajo tu entera y exclusiva
-   responsabilidad**. Eres el único responsable de cómo uses esta herramienta y
-   de cualquier consecuencia derivada.
+1. **It violates the Terms of Service** of OpenAI, Anthropic and Google. They
+   prohibit automated access to their chat interfaces with subscription
+   accounts.
+2. **It may lead to permanent suspension or ban** of your account on those
+   services.
+3. It is **disabled by default** (`ACCOUNT_PROVIDER_ENABLED=false`). The
+   recommended use of the project is **BYOK** (your own official API key), which
+   is clean and within the ToS.
+4. If you choose to enable it, you do so **entirely and exclusively at your own
+   risk**. You are solely responsible for how you use this tool and for any
+   resulting consequences.
 
-## Local-first y privacidad
+## Local-first and privacy
 
-El proyecto es **local-first**: corre íntegramente en tu máquina. Las API keys,
-credenciales y sesiones de navegador se quedan en tu disco (cifradas con
-AES-256-GCM cuando aplica). **No existe ningún servidor central**; el autor del
-proyecto nunca ve, recibe ni almacena tus datos.
+The project is **local-first**: it runs entirely on your machine. API keys,
+credentials and browser sessions stay on your disk (encrypted with AES-256-GCM
+where applicable). **There is no central server**; the author never sees,
+receives or stores your data.
 
-## Limitación de responsabilidad
+## Limitation of liability
 
-El software se proporciona "tal cual", sin garantías expresas ni implícitas. En
-ningún caso los autores o titulares del copyright serán responsables de
-reclamaciones, daños u otras responsabilidades derivadas del uso del software,
-incluida cualquier infracción de los Términos de Servicio de terceros cometida
-por el usuario. Ver el texto completo en [`LICENSE`](LICENSE).
+The software is provided "as is", without express or implied warranties. In no
+event shall the authors or copyright holders be liable for any claim, damages or
+other liability arising from the use of the software, including any violation of
+third-party Terms of Service committed by the user. See the full text in
+[`LICENSE`](LICENSE).

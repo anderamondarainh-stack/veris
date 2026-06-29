@@ -1,60 +1,60 @@
-# Contribuir a byoa-gateway
+# Contributing to Veris
 
-Gracias por tu interés. Las contribuciones (issues, PRs, ideas) son bienvenidas.
+Thanks for your interest. Contributions (issues, PRs, ideas) are welcome.
 
-## Requisitos
+## Requirements
 
-- **Node ≥ 20** y npm.
+- **Node ≥ 20** and npm.
 
-## Levantar el proyecto
+## Set up the project
 
 ```bash
 npm install
-cp .env.example .env     # añade al menos una API key
-npm run dev              # arranca en http://localhost:8787 con recarga en caliente
+cp .env.example .env     # add at least one API key
+npm run dev              # starts on http://localhost:8787 with hot reload
 ```
 
-Scripts útiles:
+Useful scripts:
 
-| Script | Qué hace |
-|--------|----------|
-| `npm run dev` | Servidor en modo desarrollo (tsx watch). |
-| `npm run build` | Compila TypeScript a `dist/`. |
-| `npm start` | Ejecuta la build de `dist/`. |
-| `npm run typecheck` | Comprueba tipos sin emitir (`tsc --noEmit`). |
-| `npm test` | Ejecuta la suite de tests (Vitest). |
+| Script | What it does |
+|--------|--------------|
+| `npm run dev` | Dev server (tsx watch). |
+| `npm run build` | Compile TypeScript to `dist/`. |
+| `npm start` | Run the `dist/` build. |
+| `npm run typecheck` | Type-check without emitting (`tsc --noEmit`). |
+| `npm test` | Run the test suite (Vitest). |
 
 ## Tests
 
-Antes de abrir un PR, asegúrate de que pasan tipos y tests:
+Before opening a PR, make sure types and tests pass:
 
 ```bash
 npm run typecheck
 npm test
 ```
 
-Añade tests para cualquier comportamiento nuevo. Los tests viven en `test/` y
-cubren router, resiliencia y credenciales.
+Add tests for any new behavior. Tests live in `test/` and cover the router,
+resilience and credentials.
 
-## Estilo de commits
+## Commit style
 
-- Usa **Conventional Commits**: `feat:`, `fix:`, `docs:`, `refactor:`,
-  `test:`, `chore:`, etc.
-- Mensajes en imperativo y concisos. Ejemplos:
-  - `feat(router): añade estrategia balanced por defecto`
-  - `fix(providers): maneja 429 con backoff exponencial`
-- Un commit por cambio lógico; mantén el diff enfocado.
+- Use **Conventional Commits**: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`,
+  `chore:`, etc.
+- Imperative, concise messages. Examples:
+  - `feat(router): add balanced strategy as default`
+  - `fix(providers): handle 429 with exponential backoff`
+- One commit per logical change; keep the diff focused.
 
-## Antes del PR
+## Before the PR
 
-1. `npm run typecheck` y `npm test` en verde.
-2. Describe el _qué_ y el _porqué_ del cambio.
-3. Si tocas comportamiento documentado, actualiza el `README.md` o
+1. `npm run typecheck` and `npm test` green.
+2. Describe the _what_ and the _why_ of the change.
+3. If you touch documented behavior, update `README.md` or
    `docs/ARCHITECTURE.md`.
 
-## Alcance y account-provider
+## Scope and the account provider
 
-Este es un proyecto open-source de demostración. El **account-provider** es una
-zona gris respecto a los Términos de Servicio de terceros (ver
-[`DISCLAIMER.md`](DISCLAIMER.md)); no se aceptarán contribuciones orientadas a
-evadir detección de proveedores ni a usos abusivos.
+This is an open-source project. The **account provider** is a gray area with
+respect to third-party Terms of Service (see [`DISCLAIMER.md`](DISCLAIMER.md));
+contributions aimed at evading provider detection or at abusive uses will not be
+accepted.

@@ -1,110 +1,118 @@
 # Veris
 
-**Gateway LLM local-first y compatible con OpenAI, con router inteligente.**
-Bring Your Own Key — o tu propia cuenta. Tú decides; todo corre en tu máquina.
+**A local-first, OpenAI-compatible LLM gateway with a smart router.**
+Point any OpenAI SDK at one endpoint and reach 11 providers — with cost-aware
+routing, automatic fallback, spend accounting and multi-tenant keys. Your keys
+never leave your machine.
 
 [![CI](https://github.com/anderamondarainh-stack/veris/actions/workflows/ci.yml/badge.svg)](https://github.com/anderamondarainh-stack/veris/actions/workflows/ci.yml)
-&nbsp;·&nbsp; Licencia MIT &nbsp;·&nbsp; Node ≥ 20
+&nbsp;·&nbsp; MIT License &nbsp;·&nbsp; Node ≥ 20 &nbsp;·&nbsp; Zero telemetry
 
 ```
-  Cualquier cliente OpenAI SDK ──►  Veris (local)  ──►  OpenAI / Anthropic / Gemini
-                                          │                Groq / DeepSeek / Mistral
-                                     ROUTER: elige el        xAI / Together / Perplexity
-                                     modelo más adecuado     OpenRouter / Ollama (local)
-                                     / barato por tarea
+  Any OpenAI SDK client  ──►   Veris (runs locally)   ──►  OpenAI / Anthropic / Gemini
+                                       │                    Groq / DeepSeek / Mistral
+                                  ROUTER: picks the          xAI / Together / Perplexity
+                                  best / cheapest model      OpenRouter / Ollama (local)
+                                  for each task
 ```
 
-## ¿Qué resuelve?
+## Why Veris?
 
-Apuntas tu app a `http://localhost:8787/v1` como si fuera la API de OpenAI, y
-el gateway:
+You wire up the OpenAI SDK once. Then you want to try Claude, or a cheap model
+for simple calls, or a local model for privacy — and suddenly you're juggling
+SDKs, base URLs and pricing tables. Veris is the single endpoint in front of all
+of them:
 
-1. **Enruta** cada petición al modelo más adecuado para la tarea (código,
-   razonamiento, chat, visión) según la estrategia que elijas
-   (`cheapest` / `best` / `balanced`).
-2. **Habla con varios proveedores** (OpenAI, Anthropic, Gemini, Groq, DeepSeek,
-   Mistral, xAI, Together, Perplexity, OpenRouter y Ollama local) con una sola
-   interfaz. Cambias de modelo sin tocar tu código.
-3. **Local-first**: tus claves y sesiones **nunca salen de tu máquina**. No hay
-   servidor central que vea tus datos.
+- **One API, every provider.** Talk to 11 providers through the OpenAI Chat
+  Completions interface. Swap models without touching your code.
+- **Smart routing.** Send `"model": "auto"` and Veris classifies the task
+  (code, reasoning, chat, vision) and routes to the best/cheapest model for your
+  strategy (`cheapest` / `best` / `balanced`).
+- **Cost control built in.** Per-request and aggregate cost accounting, an
+  optional hard spend cap, and a response cache.
+- **Resilient.** Automatic fallback to another model on failure, with
+  exponential-backoff retries on 429/5xx.
+- **Multi-tenant.** Issue virtual keys with their own budget, rate limit and
+  allowed models — without sharing your real provider keys.
+- **Local-first, zero telemetry.** Everything runs on your machine. Your keys
+  and data never reach any central server, because there isn't one.
 
-Pensado para quien quiere un único endpoint OpenAI-compatible delante de varios
-proveedores, con routing por coste/capacidad, fallback y contabilidad de gasto,
-sin montar infraestructura.
-
-## Uso rápido
+## Quick start
 
 ```bash
 git clone https://github.com/anderamondarainh-stack/veris.git
 cd veris
 npm install
-cp .env.example .env        # añade al menos una API key (p. ej. OPENAI_API_KEY)
-npm run dev                 # arranca en http://localhost:8787
+cp .env.example .env        # add at least one API key (e.g. OPENAI_API_KEY)
+npm run dev                 # starts on http://localhost:8787
 ```
 
-Prueba con `curl` (modo `auto` = deja decidir al router):
+Call it like the OpenAI API (`"model": "auto"` lets the router decide):
 
 ```bash
 curl http://localhost:8787/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "auto",
-    "messages": [{"role":"user","content":"Escribe una función en TypeScript que invierta un string"}]
+    "messages": [{"role":"user","content":"Write a TypeScript function that reverses a string"}]
   }'
 ```
 
-La respuesta incluye cabeceras de diagnóstico para ver qué decidió el router:
+The response carries diagnostic headers so you can see what the router did:
 `x-veris-model`, `x-veris-task`, `x-veris-reason`, `x-veris-cost-usd`.
 
-### Con Docker
+### Use it from the OpenAI SDK
 
-Veris trae `Dockerfile` (multi-stage, `node:20-alpine`) y `docker-compose.yml`:
-
-```bash
-cp .env.example .env        # añade al menos una API key
-docker compose up --build   # gateway en http://localhost:8787
-```
-
-Para incluir además **Ollama** (modelos locales) en el mismo compose, usa el
-perfil `local` (ver [Modelos locales con Ollama](#modelos-locales-con-ollama)):
-
-```bash
-docker compose --profile local up --build
-```
-
-La imagen expone el puerto `8787` e incluye un `HEALTHCHECK` contra `/healthz`.
-
-Con el **SDK de OpenAI** solo cambias la `baseURL` (la `apiKey` es ignorada por
-el gateway salvo que actives su auth propia):
+Just change the `baseURL` — your existing code keeps working:
 
 ```ts
 import OpenAI from "openai";
 
 const client = new OpenAI({
   baseURL: "http://localhost:8787/v1",
-  apiKey: "no-importa",
+  apiKey: "ignored", // the gateway ignores it unless you enable its own auth
 });
 
 const r = await client.chat.completions.create({
-  model: "auto", // o un modelo concreto: "gpt-4o-mini", "claude-3-5-sonnet", ...
-  messages: [{ role: "user", content: "Hola" }],
+  model: "auto", // or a specific model: "gpt-4o-mini", "claude-3-5-sonnet", ...
+  messages: [{ role: "user", content: "Hello" }],
 });
 console.log(r.choices[0].message.content);
 ```
 
-Endpoints disponibles:
+### Run with Docker
 
-- `GET /` — información del gateway.
-- `GET /v1/models` — catálogo de modelos disponibles.
-- `POST /v1/chat/completions` — completions (con streaming SSE).
-- `POST /v1/embeddings` — embeddings (ver ejemplo abajo).
-- `GET /v1/usage` — coste agregado.
-- `GET /healthz` — liveness (siempre `{"status":"ok"}` si el proceso vive).
-- `GET /readyz` — readiness (indica si hay providers configurados).
-- `GET /metrics` — métricas en formato Prometheus (si `VERIS_METRICS=true`).
+Veris ships a multi-stage `Dockerfile` (`node:20-alpine`, non-root) and a
+`docker-compose.yml`:
 
-Los errores se devuelven en el **formato de error de OpenAI**, para que
-cualquier SDK los entienda sin cambios:
+```bash
+cp .env.example .env        # add at least one API key
+docker compose up --build   # gateway on http://localhost:8787
+```
+
+The image exposes port `8787` and has a `HEALTHCHECK` against `/healthz`. To
+also run **Ollama** (local models) in the same compose, use the `local` profile
+(see [Local models with Ollama](#local-models-with-ollama)):
+
+```bash
+docker compose --profile local up --build
+```
+
+## Endpoints
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /` | Gateway info. |
+| `GET /v1/models` | Catalog of available models. |
+| `POST /v1/chat/completions` | Chat completions (SSE streaming supported). |
+| `POST /v1/embeddings` | Embeddings. |
+| `GET /v1/usage` | Aggregate cost. |
+| `GET /healthz` | Liveness (`{"status":"ok"}` while the process is alive). |
+| `GET /readyz` | Readiness (whether any provider is configured). |
+| `GET /metrics` | Prometheus metrics (when `VERIS_METRICS=true`). |
+
+Errors are returned in the **OpenAI error format**, so any SDK understands them
+unchanged:
 
 ```json
 { "error": { "message": "...", "type": "...", "code": "..." } }
@@ -115,199 +123,158 @@ cualquier SDK los entienda sin cambios:
 ```bash
 curl http://localhost:8787/v1/embeddings \
   -H "Content-Type: application/json" \
-  -d '{
-    "model": "text-embedding-3-small",
-    "input": "El veloz zorro marrón salta sobre el perro perezoso"
-  }'
-```
-
-### Observabilidad
-
-```bash
-curl http://localhost:8787/healthz   # liveness
-curl http://localhost:8787/readyz    # readiness
-curl http://localhost:8787/metrics   # métricas Prometheus
+  -d '{ "model": "text-embedding-3-small", "input": "The quick brown fox" }'
 ```
 
 ## Function calling (tools)
 
-Veris reenvía `tools`/`tool_choice` tal cual a los proveedores OpenAI-compatible,
-y **traduce** el formato para Anthropic y Gemini (en ambos sentidos: la petición
-y la respuesta con `tool_calls`). Así usas function-calling con el mismo código
-apuntes al modelo que apuntes. Limitación: el streaming de tool-calls no está
-soportado; usa el modo no-streaming para function-calling.
+Veris forwards `tools`/`tool_choice` as-is to OpenAI-compatible providers, and
+**translates** the format for Anthropic and Gemini in both directions (the
+request and the `tool_calls` in the response). You get function calling with the
+same code regardless of which model you target.
+
+> Note: streaming of tool calls is not supported — use non-streaming mode for
+> function calling.
 
 ## Multi-tenant: virtual keys
 
-¿Quieres dar acceso a Veris a varias personas/apps sin repartir tus API keys
-reales? Activa las **claves virtuales**: emites claves `vk-…`, cada una con su
-**presupuesto** (USD), **rate-limit** (req/min) y, opcionalmente, lista de
-**modelos permitidos**. El gasto se atribuye por clave.
+Want to give several people or apps access to Veris without handing out your
+real provider keys? Enable **virtual keys**: you mint `vk-…` keys, each with its
+own **budget** (USD), **rate limit** (req/min) and optional **allowed-models**
+list. Spend is attributed per key.
 
 ```bash
-# en .env
+# in .env
 VERIS_VKEYS_ENABLED=true
-VERIS_ADMIN_KEY=admin-secreto
+VERIS_ADMIN_KEY=admin-secret
 
-# crear una clave (la devuelve entera una sola vez)
+# create a key (returned in full exactly once)
 curl -X POST http://localhost:8787/admin/keys \
-  -H "Authorization: Bearer admin-secreto" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer admin-secret" -H "Content-Type: application/json" \
   -d '{"label":"app-1","budgetUsd":10,"rpm":60,"models":["auto","openai/gpt-4o-mini"]}'
 
-# usarla como cualquier API key OpenAI
+# use it like any OpenAI API key
 curl http://localhost:8787/v1/chat/completions \
   -H "Authorization: Bearer vk-..." -H "Content-Type: application/json" \
-  -d '{"model":"auto","messages":[{"role":"user","content":"hola"}]}'
+  -d '{"model":"auto","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-Rutas admin (Bearer `VERIS_ADMIN_KEY`): `POST /admin/keys`, `GET /admin/keys`,
-`DELETE /admin/keys/:key`. Errores: `402` presupuesto agotado, `429` rate-limit,
-`403` modelo no permitido.
+Admin routes (Bearer `VERIS_ADMIN_KEY`): `POST /admin/keys`, `GET /admin/keys`,
+`DELETE /admin/keys/:key`. Errors: `402` budget exhausted, `429` rate limit,
+`403` model not allowed.
 
-## Configuración
+## Configuration
 
-Todas las variables se leen del entorno al arrancar (ver `src/config.ts`).
-Copia `.env.example` a `.env` y ajusta lo que necesites. Todas son opcionales,
-pero necesitas **al menos una API key** para que haya algún provider disponible.
+All settings are read from the environment at startup (see `src/config.ts`).
+Copy `.env.example` to `.env` and adjust. Everything is optional, but you need
+**at least one API key** for any provider to be available.
 
 ### Gateway
 
-| Variable | Por defecto | Descripción |
-|----------|-------------|-------------|
-| `PORT` | `8787` | Puerto del servidor local. |
-| `ROUTER_STRATEGY` | `balanced` | Estrategia del router: `cheapest`, `best` o `balanced`. |
-| `VERIS_GATEWAY_KEY` | _(vacío)_ | Si se define, el gateway exige `Authorization: Bearer <clave>`. Protege tu gateway local de que otra cosa en tu máquina lo use. |
-| `VERIS_MAX_RETRIES` | `2` | Reintentos ante errores transitorios (429/5xx). |
-| `VERIS_RETRY_BASE_MS` | `250` | Base del backoff exponencial entre reintentos (ms). |
-| `VERIS_FALLBACK` | `true` | Activa el fallback automático a otro modelo si uno falla. |
-| `VERIS_CACHE_TTL` | `0` | TTL en segundos de la caché de respuestas idénticas. `0` la desactiva. |
-| `VERIS_SPEND_CAP_USD` | `0` | Tope de gasto acumulado en USD. Si se supera, las peticiones responden `402`. `0` = sin tope. |
-| `MODELS_FILE` | _(vacío)_ | Ruta a un JSON opcional para añadir/corregir modelos del catálogo. |
-| `VERIS_LOG` | `true` | Logging estructurado de peticiones. |
-| `VERIS_METRICS` | `true` | Expone métricas Prometheus en `/metrics`. |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `8787` | Local server port. |
+| `ROUTER_STRATEGY` | `balanced` | Router strategy: `cheapest`, `best` or `balanced`. |
+| `VERIS_GATEWAY_KEY` | _(empty)_ | If set, the gateway requires `Authorization: Bearer <key>`. Protects your local gateway from other processes on your machine. |
+| `VERIS_MAX_RETRIES` | `2` | Retries on transient errors (429/5xx). |
+| `VERIS_RETRY_BASE_MS` | `250` | Base of the exponential backoff between retries (ms). |
+| `VERIS_FALLBACK` | `true` | Enables automatic fallback to another model on failure. |
+| `VERIS_CACHE_TTL` | `0` | TTL (seconds) for the cache of identical responses. `0` disables it. |
+| `VERIS_SPEND_CAP_USD` | `0` | Hard cap on cumulative spend (USD). Over it, requests return `402`. `0` = no cap. |
+| `MODELS_FILE` | _(empty)_ | Path to an optional JSON to add/override catalog models. |
+| `VERIS_LOG` | `true` | Structured request logging. |
+| `VERIS_METRICS` | `true` | Exposes Prometheus metrics at `/metrics`. |
 
-### Providers BYOK (API keys)
+### Providers (BYOK — bring your own API key)
 
-> **Multi-key:** cualquiera de estas variables admite **varias keys separadas
-> por comas** (`KEY=sk-aaa,sk-bbb`). Veris rota entre ellas (round-robin) para
-> repartir límites de rate.
+> **Multi-key:** any of these accepts **several comma-separated keys**
+> (`KEY=sk-aaa,sk-bbb`). Veris round-robins between them to spread rate limits.
 
-| Variable | Proveedor | Notas |
-|----------|-----------|-------|
-| `OPENAI_API_KEY` | OpenAI | `OPENAI_BASE_URL` permite override de base URL. |
-| `ANTHROPIC_API_KEY` | Anthropic | Protocolo nativo. |
-| `GEMINI_API_KEY` | Google Gemini | Protocolo nativo. |
+| Variable | Provider | Notes |
+|----------|----------|-------|
+| `OPENAI_API_KEY` | OpenAI | `OPENAI_BASE_URL` overrides the base URL. |
+| `ANTHROPIC_API_KEY` | Anthropic | Native protocol. |
+| `GEMINI_API_KEY` | Google Gemini | Native protocol. |
 | `GROQ_API_KEY` | Groq | OpenAI-compatible. |
 | `DEEPSEEK_API_KEY` | DeepSeek | OpenAI-compatible. |
 | `MISTRAL_API_KEY` | Mistral | OpenAI-compatible. |
 | `XAI_API_KEY` | xAI (Grok) | OpenAI-compatible. |
 | `TOGETHER_API_KEY` | Together AI | OpenAI-compatible. |
 | `PERPLEXITY_API_KEY` | Perplexity | OpenAI-compatible. |
-| `OPENROUTER_API_KEY` | OpenRouter | OpenAI-compatible (agrega muchos modelos). |
+| `OPENROUTER_API_KEY` | OpenRouter | OpenAI-compatible (aggregates many models). |
 
-### Modelos locales con Ollama
+### Local models with Ollama
 
-[Ollama](https://ollama.com) sirve modelos en tu propia máquina, **sin coste y
-sin API key**. Veris lo trata como un provider OpenAI-compatible más.
+[Ollama](https://ollama.com) serves models on your own machine, **free and with
+no API key**. Veris treats it as just another OpenAI-compatible provider.
 
-| Variable | Por defecto | Descripción |
-|----------|-------------|-------------|
-| `OLLAMA_ENABLED` | `false` | Pon `true` para activar Ollama en `http://localhost:11434/v1`. |
-| `OLLAMA_BASE_URL` | _(vacío)_ | Base URL de Ollama. Definirla también lo activa (útil en Docker). |
-
-Local, en tu máquina:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OLLAMA_ENABLED` | `false` | Set `true` to enable Ollama at `http://localhost:11434/v1`. |
+| `OLLAMA_BASE_URL` | _(empty)_ | Ollama base URL. Setting it also enables Ollama (useful in Docker). |
 
 ```bash
-ollama serve            # arranca Ollama
-ollama pull llama3.1    # descarga un modelo
-# en tu .env:
+ollama serve            # start Ollama
+ollama pull llama3.1    # pull a model
+# in your .env:
 OLLAMA_ENABLED=true
 ```
 
-Con Docker Compose (perfil `local`, Veris alcanza a Ollama por la red interna).
-Ollama va **desactivado por defecto**; para activarlo añade a tu `.env`:
+With Docker Compose (`local` profile, Veris reaches Ollama over the internal
+network):
 
 ```bash
 echo "OLLAMA_BASE_URL=http://ollama:11434/v1" >> .env
 docker compose --profile local up --build
 ```
 
-### Account-provider (zona gris ToS · opcional)
+## Capabilities
 
-| Variable | Por defecto | Descripción |
-|----------|-------------|-------------|
-| `ACCOUNT_PROVIDER_ENABLED` | `false` | Activa el account-provider. **Desactivado por defecto.** Léete el [aviso legal](#aviso-legal) antes de tocarlo. |
-| `VERIS_PROFILE_DIR` | `.browser-profiles` | Carpeta local del perfil de navegador (cookies/sesión). |
-| `VERIS_MASTER_KEY` | _(vacío)_ | Clave maestra para cifrar credenciales en disco (AES-256-GCM). |
-| `ACCOUNT_HEADLESS` | `false` | Ejecuta el navegador sin interfaz gráfica. |
-| `ACCOUNT_HUMANIZE` | `true` | Imita la cadencia humana al teclear. |
-| `ACCOUNT_STEALTH` | `false` | Aplica medidas anti-detección al navegador. |
+- **Smart router**: classifies the task, adjusts for context window and vision,
+  and produces a model **ranking** (`cheapest`/`best`/`balanced`).
+- **Resilience**: automatic fallback between models + backoff retries (429/5xx
+  retry; 4xx aborts).
+- **Cost accounting** per request and aggregated at `/v1/usage` (header
+  `x-veris-cost-usd`), with an optional hard spend cap.
+- **Response cache** with optional TTL for identical completions.
+- **Optional gateway auth** (Bearer token) and **virtual keys** for multi-tenant
+  access.
+- **OpenAI-compatible SSE streaming**.
+- **Observability**: structured logs and Prometheus metrics.
 
-## Providers: dos formas de conectar
+## Architecture
 
-| Provider | Qué usa | Estado | Legalidad |
-|----------|---------|--------|-----------|
-| **BYOK** (recomendado) | Tu **API key** oficial | ✅ Listo | Limpio, dentro de ToS |
-| **Account** (opcional) | Tu **cuenta** Plus/Pro automatizada | ⚠️ Funcional (frágil) | Zona gris — viola ToS |
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the request flow,
+components and design decisions.
 
-El **BYOK** es la vía recomendada y la que cualquier usuario debería usar: das
-tu API key oficial y el gateway llama a la API real del proveedor.
+## Advanced / optional: account provider
 
-El **account-provider** automatiza la web de chat para aprovechar una
-suscripción mensual (tipo Plus/Pro) en vez de pagar por token. Es funcional
-(navegador real con Playwright) pero frágil por diseño, va **desactivado por
-defecto** y conlleva implicaciones legales serias: ver abajo.
+Besides BYOK (the recommended path), Veris includes an **optional, off-by-default
+module** that can drive a provider's own chat web UI through a real browser, so a
+monthly subscription can be used instead of paying per token.
 
-## Aviso legal
+> ⚠️ **Read this first.** Automating a provider's chat UI **violates the Terms of
+> Service** of OpenAI/Anthropic/Google and may get your account suspended. It is
+> **disabled by default** (`ACCOUNT_PROVIDER_ENABLED=false`), kept isolated from
+> the core (no browser is installed unless you opt in), and is **local-first**:
+> credentials are encrypted on your disk (AES-256-GCM) and never leave it. If you
+> enable it, you do so **entirely at your own risk**. See
+> [`DISCLAIMER.md`](DISCLAIMER.md).
 
-> **El account-provider viola los Términos de Servicio de terceros
-> (OpenAI/Anthropic/Google) y puede provocar el baneo de tu cuenta.**
-
-- Va **desactivado por defecto** (`ACCOUNT_PROVIDER_ENABLED=false`). El core
-  BYOK funciona sin él y sin instalar ningún navegador.
-- Si lo activas, lo haces **bajo tu entera responsabilidad**. Eres el único
-  responsable de cómo uses esta herramienta.
-- Es **local-first**: las credenciales y la sesión se quedan cifradas en tu
-  disco; el autor del proyecto nunca las ve ni las recibe.
-- El software se ofrece **sin garantía** (licencia MIT).
-
-Más detalle en [`DISCLAIMER.md`](DISCLAIMER.md).
-
-## Capacidades
-
-Gateway:
-- Router inteligente: clasifica la tarea, ajusta por ventana de contexto y
-  visión, y produce un **ranking** de modelos (`cheapest`/`best`/`balanced`).
-- **Resiliencia**: fallback automático entre modelos + reintentos con backoff
-  (429/5xx reintentan; 4xx abortan).
-- **Contabilidad de coste** por request y agregada en `/v1/usage`
-  (cabecera `x-veris-cost-usd`).
-- **Caché** TTL opcional para completions idénticas.
-- **Auth** opcional del gateway (Bearer token).
-- Streaming SSE compatible con OpenAI.
-
-Account-provider (zona gris ToS · opcional):
-- Navegador real (Playwright) con perfil persistente local, drivers de sitio
-  intercambiables, tecleo humanizado y stealth opcional.
-- **Store de credenciales cifrado** (AES-256-GCM, local-first).
-
-## Arquitectura
-
-Ver [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) para el flujo de una petición,
-los componentes y las decisiones de diseño.
+The recommended and fully supported way to run Veris is **BYOK** — your official
+API key, cleanly within every provider's ToS.
 
 ## Roadmap
 
-- [ ] Clasificador por embeddings opcional (fase 2).
-- [ ] Drivers de sitio mantenidos (anthropic/gemini) para el account-provider.
-- [ ] Persistencia del ledger de coste (Redis/Postgres).
-- [ ] Streaming real desde el account-provider.
+- [ ] Optional embeddings-based task classifier (phase 2).
+- [ ] Persistent cost ledger (Redis/Postgres).
+- [ ] Maintained site drivers for the optional account module.
 
-## Contribuir
+## Contributing
 
-Las contribuciones son bienvenidas. Lee [`CONTRIBUTING.md`](CONTRIBUTING.md)
-para levantar el proyecto, correr los tests y el estilo de commits.
+Contributions are welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) to set up the
+project, run the tests and the commit style.
 
-## Licencia
+## License
 
-[MIT](LICENSE). Software ofrecido **sin garantía**.
+[MIT](LICENSE). Software provided **without warranty**.
