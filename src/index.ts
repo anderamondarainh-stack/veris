@@ -214,12 +214,19 @@ app.post("/v1/chat/completions", async (c) => {
   const vkey = c.get("vkey");
   const restrict = vkey ? vkeys.restrictModelsFor(vkey) : undefined;
 
+  // Si se pide un modelo CONCRETO que la clave no permite, 403 explícito en vez
+  // de reenrutar a otro modelo en silencio (el cliente debe saberlo).
+  if (restrict && body.model && body.model !== "auto" && !restrict.has(body.model)) {
+    return c.json(oaiError(`modelo '${body.model}' no permitido para esta clave`, "model_not_allowed"), 403);
+  }
+
   let decision;
   try {
     decision = route(body, registry.availableProviderNames(), cfg.strategy, restrict);
   } catch (e: any) {
     // Si la clave restringe modelos y no hay ninguno viable, es un 403 (no un 503).
     if (restrict) {
+      console.error(`[route] sin modelo permitido para vkey: ${e?.message}`);
       return c.json(oaiError("ningún modelo permitido para esta clave está disponible", "model_not_allowed"), 403);
     }
     return c.json(oaiError(e.message, "no_viable_model"), 503);
@@ -402,7 +409,11 @@ function streamSSE(
 
   // Contabiliza coste y uso de `outChars` tokens de salida (estimados). Se
   // llama tanto al terminar bien como en error a mitad de stream (coste parcial).
+  // El guard `billed` evita doble cobro si se llama dos veces (éxito + catch).
+  let billed = false;
   const account = () => {
+    if (billed) return;
+    billed = true;
     const completionTokens = Math.ceil(outChars / 4);
     const costUsd = estimateCost(decision.model as any, decision.promptTokens, completionTokens);
     ledger.record({

@@ -42,7 +42,7 @@ export class Registry {
     const accountEnabled = env.ACCOUNT_PROVIDER_ENABLED === "true";
     const accountOpts = (upstream: "openai" | "anthropic" | "gemini") => ({
       enabled: accountEnabled,
-      profileDir: `${env.BYOA_PROFILE_DIR ?? ".browser-profiles"}/${upstream}`,
+      profileDir: `${env.VERIS_PROFILE_DIR ?? env.BYOA_PROFILE_DIR ?? ".browser-profiles"}/${upstream}`,
       headless: env.ACCOUNT_HEADLESS === "true",
       humanize: env.ACCOUNT_HUMANIZE !== "false",
       stealth: env.ACCOUNT_STEALTH === "true",

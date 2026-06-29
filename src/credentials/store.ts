@@ -8,7 +8,7 @@ import { hostname, userInfo } from "node:os";
 // ─────────────────────────────────────────────────────────────────────────
 //  Cifra secretos (cookies de sesión, tokens del account-provider, API keys)
 //  con AES-256-GCM. La clave se deriva por scrypt de la clave maestra del
-//  usuario (BYOA_MASTER_KEY). Sin esa clave, el fichero en disco es inútil.
+//  usuario (VERIS_MASTER_KEY). Sin esa clave, el fichero en disco es inútil.
 //
 //  Principio: el dueño del proyecto NUNCA ve estos datos. Viven cifrados en
 //  ./.byoa/ en la máquina del usuario. Si no hay clave maestra, se deriva una
@@ -112,7 +112,7 @@ export class CredentialStore {
   }
 }
 
-// Clave maestra derivada de la máquina cuando el usuario no fijó BYOA_MASTER_KEY.
+// Clave maestra derivada de la máquina cuando el usuario no fijó VERIS_MASTER_KEY.
 // NO se basa solo en hostname/usuario (públicos): genera y persiste un token
 // aleatorio de 32 bytes en `tokenPath` (permisos 0600) y lo mezcla con el
 // contexto de la máquina. Sigue siendo más débil que una clave maestra que el
