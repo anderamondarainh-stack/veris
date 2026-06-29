@@ -30,59 +30,137 @@ function flatten(messages: ChatMessage[]): string {
     .join("\n\n");
 }
 
-// Escribe texto imitando cadencia humana (dwell/flight variable), más natural
-// que rellenar de golpe. `humanize=false` escribe el texto de una vez.
-async function typeHumanlike(page: any, selector: string, text: string, humanize: boolean) {
-  const el = await page.waitForSelector(selector, { timeout: 15_000 });
+// Primer selector que exista en la página (probamos varios por robustez ante
+// cambios de DOM). Devuelve el locator del primero con match, o null.
+async function firstExisting(page: any, selectors: string[]): Promise<any | null> {
+  for (const sel of selectors) {
+    const loc = page.locator(sel).first();
+    if ((await loc.count().catch(() => 0)) > 0) return loc;
+  }
+  return null;
+}
+
+// Escribe en una caja (textarea o contenteditable) imitando cadencia humana.
+// `humanize=false` lo rellena de golpe. Para contenteditable, enfocamos y
+// tecleamos por teclado (fill no siempre dispara los handlers de React).
+async function typeInto(page: any, loc: any, text: string, humanize: boolean) {
+  await loc.click();
   if (!humanize) {
-    await el.fill(text);
-    return;
+    // Intento rápido: fill; si la caja es contenteditable y no lo soporta,
+    // caemos a teclear de golpe por teclado.
+    try {
+      await loc.fill(text);
+      return;
+    } catch {
+      await page.keyboard.insertText(text);
+      return;
+    }
   }
   for (const ch of text) {
-    await el.type(ch, { delay: 40 + Math.floor(Math.random() * 90) });
+    await page.keyboard.type(ch, { delay: 35 + Math.floor(((ch.charCodeAt(0) * 9301 + 49297) % 233) / 2) });
   }
 }
 
-// ── Driver de ejemplo (OpenAI/ChatGPT) ────────────────────────────────────
-// SELECTORES ILUSTRATIVOS. Verificar/actualizar contra el DOM real del sitio;
-// rotan con frecuencia. Mantener SOLO aquí.
+// ── Driver de OpenAI / ChatGPT ─────────────────────────────────────────────
+// Selectores verificados contra chatgpt.com (jun-2026). Rotan con frecuencia;
+// si algo deja de funcionar, este es el único sitio a actualizar.
+const PROMPT_SELECTORS = ["#prompt-textarea", "div[contenteditable='true']", "textarea"];
+const SEND_SELECTORS = ["[data-testid='send-button']", "button[aria-label*='Send' i]"];
+const STOP_SELECTORS = ["[data-testid='stop-button']", "button[aria-label*='Stop' i]"];
+const ASSISTANT_SELECTOR = "[data-message-author-role='assistant']";
+const LOGIN_SELECTORS = [
+  "[data-testid='login-button']",
+  "a[href*='auth/login']",
+  "button:has-text('Log in')",
+];
+
 export const openaiDriver: SiteDriver = {
   id: "openai",
   url: "https://chatgpt.com/",
-  loginHint: "Abre el navegador del account-provider y haz login una vez; el perfil queda guardado.",
+  loginHint: "Ejecuta `veris account login openai` y haz login una vez; el perfil queda guardado.",
+
   async isLoggedIn(page: any): Promise<boolean> {
-    // Heurística: la caja de prompt solo existe logueado.
-    return (await page.locator("textarea, [contenteditable='true']").count()) > 0;
+    // Logueado si existe el compositor de prompt y NO hay botón de login visible.
+    const composer = await firstExisting(page, PROMPT_SELECTORS);
+    if (!composer) return false;
+    for (const sel of LOGIN_SELECTORS) {
+      const visible = await page
+        .locator(sel)
+        .first()
+        .isVisible()
+        .catch(() => false);
+      if (visible) return false;
+    }
+    return true;
   },
+
   async send(page: any, messages: ChatMessage[], opts: { humanize: boolean }): Promise<string> {
     const prompt = flatten(messages);
-    const inputSel = "textarea, [contenteditable='true']";
-    await typeHumanlike(page, inputSel, prompt, opts.humanize);
-    await page.keyboard.press("Enter");
 
-    // Espera a que aparezca y se estabilice una respuesta del asistente.
-    const answerSel = "[data-message-author-role='assistant']";
-    await page.waitForSelector(answerSel, { timeout: 60_000 });
-    // Espera de estabilización: el texto deja de crecer (streaming terminado).
-    let last = "";
-    let stable = false;
-    for (let i = 0; i < 60; i++) {
-      const cur = (await page.locator(answerSel).last().innerText().catch(() => "")) as string;
-      if (cur && cur === last) {
-        stable = true;
-        break;
-      }
-      last = cur;
-      await page.waitForTimeout(500);
+    const input = await firstExisting(page, PROMPT_SELECTORS);
+    if (!input) throw new Error("account-provider: no se encontró la caja de prompt (selector roto o sin login)");
+
+    // Cuántas respuestas del asistente había antes de enviar (para detectar la nueva).
+    const before = await page.locator(ASSISTANT_SELECTOR).count().catch(() => 0);
+
+    await typeInto(page, input, prompt, opts.humanize);
+
+    // Enviar: Enter; si no arranca, intentamos el botón de envío.
+    await page.keyboard.press("Enter");
+    const started = await waitForGenerationStart(page, before);
+    if (!started) {
+      const sendBtn = await firstExisting(page, SEND_SELECTORS);
+      if (sendBtn) await sendBtn.click().catch(() => {});
+      await waitForGenerationStart(page, before);
     }
-    // No devolvemos respuesta vacía como si fuera válida: o se estabilizó con
-    // contenido, o algo falló (timeout, selector roto, respuesta vacía real).
-    if (!last || !stable) {
-      throw new Error("account-provider: no se obtuvo una respuesta estable (selector roto o timeout)");
+
+    // Esperar fin de generación: el botón de stop desaparece. Fallback: el texto
+    // de la última respuesta deja de crecer.
+    await waitForGenerationEnd(page);
+
+    const answer = await page
+      .locator(ASSISTANT_SELECTOR)
+      .last()
+      .innerText()
+      .catch(() => "");
+    if (!answer || !answer.trim()) {
+      throw new Error("account-provider: respuesta vacía (selector de respuesta roto o timeout)");
     }
-    return last;
+    return answer.trim();
   },
 };
+
+// La generación ha empezado si aparece el botón de stop o si hay una respuesta
+// nueva del asistente respecto al conteo previo. Sondea ~8s.
+async function waitForGenerationStart(page: any, beforeCount: number): Promise<boolean> {
+  for (let i = 0; i < 16; i++) {
+    const stop = await firstExisting(page, STOP_SELECTORS);
+    if (stop) return true;
+    const now = await page.locator(ASSISTANT_SELECTOR).count().catch(() => 0);
+    if (now > beforeCount) return true;
+    await page.waitForTimeout(500);
+  }
+  return false;
+}
+
+// La generación ha terminado cuando el botón de stop desaparece. Si nunca lo
+// vimos, caemos a estabilización: la última respuesta deja de crecer.
+async function waitForGenerationEnd(page: any): Promise<void> {
+  // Fase 1: esperar a que desaparezca el stop (hasta 120s de respuesta larga).
+  for (let i = 0; i < 240; i++) {
+    const stop = await firstExisting(page, STOP_SELECTORS);
+    if (!stop) break;
+    await page.waitForTimeout(500);
+  }
+  // Fase 2: estabilización de texto (cubre el caso de que no haya stop-button).
+  let last = "";
+  for (let i = 0; i < 30; i++) {
+    const cur = (await page.locator(ASSISTANT_SELECTOR).last().innerText().catch(() => "")) as string;
+    if (cur && cur === last) return;
+    last = cur;
+    await page.waitForTimeout(400);
+  }
+}
 
 export const DRIVERS: Record<string, SiteDriver> = {
   openai: openaiDriver,
